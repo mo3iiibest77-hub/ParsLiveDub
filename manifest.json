@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ParsLiveDub",
-  "version": "1.5.0",
-  "description": "Live-dub any tab into 70+ languages with Gemini Live Translate. Bring your own API key.",
+  "version": "1.6.0",
+  "description": "Live-dub any tab into 70+ languages. Auto lipsync and male/female voice matching via Gemini Live Translate.",
   "permissions": ["tabCapture", "offscreen", "storage", "activeTab"],
   "optional_host_permissions": ["https://generativelanguage.googleapis.com/*"],
   "background": {
@@ -19,6 +19,14 @@
     "default_title": "ParsLiveDub"
   },
   "options_page": "options/options.html",
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content/sync.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
