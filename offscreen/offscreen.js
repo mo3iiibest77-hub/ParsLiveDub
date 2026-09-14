@@ -1,18 +1,19 @@
-// ParsLiveDub - Offscreen Audio Processor
-// Handles tab audio capture, PCM conversion, Gemini Live WebSocket, and playback
+// ParsLiveDub Offscreen Engine v1.0
+// Uses Gemini 3.5 Live Translate for low-latency Persian dubbing
 
 let audioContext = null;
 let mediaStream = null;
 let sourceNode = null;
+let gainNode = null;
 let processorNode = null;
 let websocket = null;
 let isActive = false;
 let apiKey = '';
 let targetLang = 'fa';
-
-// Audio playback queue for smooth output
 let nextPlayTime = 0;
-const audioQueue = [];
+let reconnectAttempts = 0;
+const MAX_RECONNECT = 4;
+const MODEL = 'gemini-3.5-live-translate-preview';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'OFFSCREEN_START') {
@@ -21,21 +22,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
-  
   if (message.type === 'OFFSCREEN_STOP') {
     stopCapture();
     sendResponse({ success: true });
   }
 });
 
-async function startCapture(streamId, key, lang) {
+async function startCapture(streamId, key, lang = 'fa') {
   if (isActive) stopCapture();
-  
   apiKey = key;
   targetLang = lang || 'fa';
   isActive = true;
-  
-  // Get the media stream from tabCapture
+  reconnectAttempts = 0;
+  nextPlayTime = 0;
+
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -44,185 +44,143 @@ async function startCapture(streamId, key, lang) {
       }
     }
   });
-  
+
   audioContext = new AudioContext({ sampleRate: 16000 });
-  
-  // Create source from tab stream
   sourceNode = audioContext.createMediaStreamSource(mediaStream);
-  
-  // Create a ScriptProcessor for getting raw PCM (or better: AudioWorklet in future)
-  // For simplicity and compatibility we use ScriptProcessor first
+
+  // Duck original audio
+  gainNode = audioContext.createGain();
+  gainNode.gain.value = 0.18;
+  sourceNode.connect(gainNode);
+  gainNode.connect(audioContext.destination);
+
   const bufferSize = 4096;
   processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
-  
-  processorNode.onaudioprocess = (event) => {
+  processorNode.onaudioprocess = (e) => {
     if (!isActive || !websocket || websocket.readyState !== WebSocket.OPEN) return;
-    
-    const inputData = event.inputBuffer.getChannelData(0);
-    // Convert Float32 to Int16 PCM
-    const pcm16 = floatTo16BitPCM(inputData);
-    sendAudioChunk(pcm16);
+    const pcm = floatTo16BitPCM(e.inputBuffer.getChannelData(0));
+    sendChunk(pcm);
   };
-  
   sourceNode.connect(processorNode);
-  processorNode.connect(audioContext.destination); // Keep the original audio playing (we can duck later)
-  
-  // Connect to Gemini Live Translate
-  await connectToGemini();
-  
-  console.log('[ParsLiveDub] Capture started');
+
+  await connectWS();
+  console.log('[ParsLiveDub] Engine started – Live Translate to', targetLang);
 }
 
-function floatTo16BitPCM(float32Array) {
-  const buffer = new ArrayBuffer(float32Array.length * 2);
-  const view = new DataView(buffer);
-  for (let i = 0; i < float32Array.length; i++) {
-    let s = Math.max(-1, Math.min(1, float32Array[i]));
+function floatTo16BitPCM(f32) {
+  const buf = new ArrayBuffer(f32.length * 2);
+  const view = new DataView(buf);
+  for (let i = 0; i < f32.length; i++) {
+    let s = Math.max(-1, Math.min(1, f32[i]));
     view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
   }
-  return new Uint8Array(buffer);
+  return new Uint8Array(buf);
 }
 
-async function connectToGemini() {
-  // Gemini Live API WebSocket endpoint
-  // Using the Live Translate model for best speech-to-speech
-  const model = 'gemini-2.5-flash-native-audio-preview-12-2025'; // or latest live translate model
-  // Note: Check current available models. For pure translation better use live-translate if available.
-  
-  const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${apiKey}`;
-  
-  websocket = new WebSocket(url);
-  
-  websocket.onopen = () => {
-    console.log('[ParsLiveDub] WebSocket connected');
-    // Send setup message
-    const setup = {
-      setup: {
-        model: `models/${model}`,
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: 'Kore' // or other available voices
-              }
+function connectWS() {
+  return new Promise((resolve, reject) => {
+    const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+    websocket = new WebSocket(url);
+
+    websocket.onopen = () => {
+      console.log('[ParsLiveDub] WS connected');
+      reconnectAttempts = 0;
+      const setup = {
+        setup: {
+          model: `models/${MODEL}`,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            translationConfig: {
+              targetLanguageCode: targetLang,
+              echoTargetLanguage: true
             }
           }
-        },
-        systemInstruction: {
-          parts: [{
-            text: `You are a professional simultaneous interpreter. Translate the incoming speech into natural, fluent Persian (Farsi). Keep the original meaning, tone and emotion. Output only the translated speech audio. Do not add any extra comments.`
-          }]
         }
-      }
+      };
+      websocket.send(JSON.stringify(setup));
+      resolve();
     };
-    websocket.send(JSON.stringify(setup));
-  };
-  
-  websocket.onmessage = async (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      
-      // Handle audio response
-      if (data.serverContent?.modelTurn?.parts) {
-        for (const part of data.serverContent.modelTurn.parts) {
-          if (part.inlineData && part.inlineData.mimeType?.startsWith('audio/')) {
-            const audioData = base64ToArrayBuffer(part.inlineData.data);
-            playAudioChunk(audioData);
+
+    websocket.onmessage = async (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.serverContent?.modelTurn?.parts) {
+          for (const part of data.serverContent.modelTurn.parts) {
+            if (part.inlineData?.mimeType?.startsWith('audio/')) {
+              const ab = base64ToAB(part.inlineData.data);
+              playChunk(ab);
+            }
           }
         }
+      } catch (e) {
+        console.error('[ParsLiveDub] parse error', e);
       }
-    } catch (e) {
-      console.error('[ParsLiveDub] Message parse error', e);
-    }
-  };
-  
-  websocket.onerror = (err) => {
-    console.error('[ParsLiveDub] WebSocket error', err);
-  };
-  
-  websocket.onclose = () => {
-    console.log('[ParsLiveDub] WebSocket closed');
-  };
+    };
+
+    websocket.onerror = (e) => {
+      console.error('[ParsLiveDub] WS error', e);
+      reject(e);
+    };
+
+    websocket.onclose = () => {
+      console.log('[ParsLiveDub] WS closed');
+      if (isActive && reconnectAttempts < MAX_RECONNECT) {
+        reconnectAttempts++;
+        setTimeout(() => connectWS().catch(console.error), 1200 * reconnectAttempts);
+      }
+    };
+  });
 }
 
-function sendAudioChunk(pcm16) {
+function sendChunk(pcm16) {
   if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
-  
-  // Convert to base64
-  const base64 = btoa(String.fromCharCode(...pcm16));
-  
-  const message = {
+  let binary = '';
+  for (let i = 0; i < pcm16.length; i++) binary += String.fromCharCode(pcm16[i]);
+  const b64 = btoa(binary);
+  websocket.send(JSON.stringify({
     realtimeInput: {
-      mediaChunks: [{
-        mimeType: 'audio/pcm;rate=16000',
-        data: base64
-      }]
+      mediaChunks: [{ mimeType: 'audio/pcm;rate=16000', data: b64 }]
     }
-  };
-  
-  websocket.send(JSON.stringify(message));
+  }));
 }
 
-function base64ToArrayBuffer(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
+function base64ToAB(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes.buffer;
 }
 
-async function playAudioChunk(arrayBuffer) {
+async function playChunk(arrayBuffer) {
   if (!audioContext) return;
-  
   try {
-    // Gemini usually returns 24kHz audio
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
-    
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
-    
-    const currentTime = audioContext.currentTime;
-    if (nextPlayTime < currentTime) {
-      nextPlayTime = currentTime;
-    }
-    source.start(nextPlayTime);
+    const src = audioContext.createBufferSource();
+    src.buffer = audioBuffer;
+    src.connect(audioContext.destination);
+    const now = audioContext.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.03;
+    src.start(nextPlayTime);
     nextPlayTime += audioBuffer.duration;
+
+    // Stronger duck while TTS is playing
+    if (gainNode) {
+      gainNode.gain.setTargetAtTime(0.06, now, 0.04);
+      gainNode.gain.setTargetAtTime(0.18, nextPlayTime, 0.25);
+    }
   } catch (e) {
-    console.error('[ParsLiveDub] Playback error', e);
+    console.warn('[ParsLiveDub] playback decode issue', e.message);
   }
 }
 
 function stopCapture() {
   isActive = false;
-  
-  if (websocket) {
-    websocket.close();
-    websocket = null;
-  }
-  
-  if (processorNode) {
-    processorNode.disconnect();
-    processorNode = null;
-  }
-  
-  if (sourceNode) {
-    sourceNode.disconnect();
-    sourceNode = null;
-  }
-  
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(t => t.stop());
-    mediaStream = null;
-  }
-  
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-  }
-  
+  if (websocket) { try { websocket.close(); } catch(_){} websocket = null; }
+  if (processorNode) { processorNode.disconnect(); processorNode = null; }
+  if (gainNode) { gainNode.disconnect(); gainNode = null; }
+  if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioContext) { audioContext.close().catch(()=>{}); audioContext = null; }
   nextPlayTime = 0;
-  console.log('[ParsLiveDub] Capture stopped');
+  console.log('[ParsLiveDub] Engine stopped');
 }

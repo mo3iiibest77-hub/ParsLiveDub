@@ -7,42 +7,39 @@
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
-  <div class="container">
+  <div class="wrap">
     <h1>🎙️ تنظیمات ParsLiveDub</h1>
-    
+
     <section class="card">
       <h2>کلید Gemini API</h2>
-      <p class="desc">کلید رایگان خود را از <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a> بگیرید و اینجا وارد کنید.</p>
-      
-      <div class="input-group">
-        <input type="password" id="apiKeyInput" placeholder="AIzaSy..." />
-        <button id="toggleVisibility">نمایش</button>
+      <p class="desc">کلید رایگان را از <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> بگیرید و اینجا ذخیره کنید. کلید فقط روی دستگاه شما می‌ماند.</p>
+      <div class="row">
+        <input type="password" id="keyInput" placeholder="AIzaSy...">
+        <button id="toggleBtn" type="button">نمایش</button>
       </div>
-      
-      <button id="saveBtn" class="btn-primary">ذخیره کلید</button>
-      <div id="saveStatus" class="status-msg"></div>
+      <button id="saveBtn" class="primary">ذخیره کلید</button>
+      <div id="msg" class="msg"></div>
     </section>
 
     <section class="card">
-      <h2>راهنمای استفاده</h2>
+      <h2>نحوه استفاده</h2>
       <ol>
         <li>کلید API را ذخیره کنید.</li>
-        <li>به تب یوتیوب یا هر سایتی که صدا دارد بروید.</li>
+        <li>به یوتیوب یا هر صفحه دارای صدا بروید.</li>
         <li>روی آیکون افزونه کلیک کنید و «شروع دوبله» را بزنید.</li>
         <li>صدا به صورت زنده به فارسی ترجمه و پخش می‌شود.</li>
       </ol>
     </section>
 
     <section class="card">
-      <h2>نکات مهم</h2>
+      <h2>نکات</h2>
       <ul>
-        <li>این افزونه روی <strong>Lemur Browser</strong> و کروم دسکتاپ کار می‌کند.</li>
-        <li>برای بهترین نتیجه از هدفون استفاده کنید.</li>
-        <li>هزینه استفاده از مدل بر اساس کلید خودتان محاسبه می‌شود (سطح رایگان معمولاً کافی است).</li>
+        <li>بهترین عملکرد با هدفون.</li>
+        <li>روی Chrome دسکتاپ و <strong>Lemur Browser</strong> اندروید تست شده.</li>
+        <li>هزینه بر اساس کلید خودتان محاسبه می‌شود (سطح رایگان معمولاً کافی است).</li>
       </ul>
     </section>
   </div>
-
   <script src="options.js"></script>
 </body>
 </html>

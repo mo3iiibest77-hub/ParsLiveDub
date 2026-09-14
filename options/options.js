@@ -1,40 +1,32 @@
-const apiKeyInput = document.getElementById('apiKeyInput');
-const saveBtn = document.getElementById('saveBtn');
-const toggleVisibility = document.getElementById('toggleVisibility');
-const saveStatus = document.getElementById('saveStatus');
+const keyInput = document.getElementById('keyInput');
+const saveBtn  = document.getElementById('saveBtn');
+const toggleBtn = document.getElementById('toggleBtn');
+const msg = document.getElementById('msg');
 
-// Load existing key
-chrome.storage.local.get(['geminiApiKey'], (result) => {
-  if (result.geminiApiKey) {
-    apiKeyInput.value = result.geminiApiKey;
-  }
+chrome.storage.local.get(['geminiApiKey'], (r) => {
+  if (r.geminiApiKey) keyInput.value = r.geminiApiKey;
 });
 
-toggleVisibility.addEventListener('click', () => {
-  if (apiKeyInput.type === 'password') {
-    apiKeyInput.type = 'text';
-    toggleVisibility.textContent = 'مخفی';
+toggleBtn.addEventListener('click', () => {
+  if (keyInput.type === 'password') {
+    keyInput.type = 'text';
+    toggleBtn.textContent = 'مخفی';
   } else {
-    apiKeyInput.type = 'password';
-    toggleVisibility.textContent = 'نمایش';
+    keyInput.type = 'password';
+    toggleBtn.textContent = 'نمایش';
   }
 });
 
 saveBtn.addEventListener('click', () => {
-  const key = apiKeyInput.value.trim();
-  
+  const key = keyInput.value.trim();
   if (!key) {
-    saveStatus.textContent = 'لطفاً کلید را وارد کنید';
-    saveStatus.className = 'status-msg error';
+    msg.textContent = 'کلید را وارد کنید';
+    msg.className = 'msg err';
     return;
   }
-  
   chrome.storage.local.set({ geminiApiKey: key }, () => {
-    saveStatus.textContent = '✓ کلید با موفقیت ذخیره شد';
-    saveStatus.className = 'status-msg success';
-    
-    setTimeout(() => {
-      saveStatus.textContent = '';
-    }, 3000);
+    msg.textContent = '✓ کلید ذخیره شد';
+    msg.className = 'msg ok';
+    setTimeout(() => msg.textContent = '', 2500);
   });
 });

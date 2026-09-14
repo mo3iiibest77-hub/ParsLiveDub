@@ -1,34 +1,34 @@
 # 🎙️ ParsLiveDub
 
-**دوبله زنده و حرفه‌ای ویدیوها و پادکست‌ها به زبان فارسی با قدرت Gemini AI**
+**دوبله زنده حرفه‌ای ویدیوها و پادکست‌ها به فارسی با قدرت Gemini Live Translate**
 
-Real-time AI-powered live dubbing Chrome extension for Persian (Farsi).  
-Optimized for desktop Chrome and Android (Lemur Browser).
-
----
-
-## ✨ ویژگی‌ها
-
-- دوبله زنده با تأخیر بسیار کم (۱–۳ ثانیه)
-- استفاده از مدل‌های پیشرفته Gemini Live
-- پشتیبانی از تشخیص گوینده (در نسخه‌های بعدی کامل‌تر می‌شود)
-- رابط کاربری زیبا و راست‌چین
-- کلید API شما روی دستگاه خودتان می‌ماند (حریم خصوصی کامل)
-- سازگار با YouTube، پادکست‌ها، اخبار و بیشتر سایت‌ها
+Real-time AI live dubbing Chrome extension for Persian (Farsi).  
+Works on desktop Chrome and Android (Lemur Browser).
 
 ---
 
-## 🚀 نصب سریع (Unpacked)
+## ✨ ویژگی‌های فعلی (v1.0.0)
 
-1. این ریپو را Clone یا به صورت ZIP دانلود کنید.
-2. در کروم یا Lemur Browser به آدرس `chrome://extensions` بروید.
-3. **Developer mode** را فعال کنید.
-4. روی **Load unpacked** کلیک کنید و پوشه پروژه را انتخاب کنید.
-5. کلید Gemini خود را از [Google AI Studio](https://aistudio.google.com/apikey) بگیرید و در تنظیمات افزونه وارد کنید.
+- دوبله زنده با مدل **gemini-3.5-live-translate-preview**
+- تأخیر بسیار کم
+- کاهش خودکار صدای اصلی (ducking) هنگام پخش ترجمه
+- رابط کاربری زیبا و کاملاً راست‌چین
+- کلید API فقط روی دستگاه کاربر ذخیره می‌شود
+- پشتیبانی از reconnect خودکار
 
 ---
 
-## 🛠️ ساختار پروژه
+## 🚀 نصب (Load Unpacked)
+
+1. این ریپو را Clone یا ZIP دانلود کنید.
+2. در Chrome یا Lemur Browser بروید به `chrome://extensions`
+3. **Developer mode** را روشن کنید.
+4. **Load unpacked** → پوشه پروژه را انتخاب کنید.
+5. کلید Gemini را از [aistudio.google.com/apikey](https://aistudio.google.com/apikey) بگیرید و در تنظیمات افزونه وارد کنید.
+
+---
+
+## 📁 ساختار
 
 ```
 ParsLiveDub/
@@ -38,34 +38,29 @@ ParsLiveDub/
 │   ├── offscreen.html
 │   └── offscreen.js
 ├── popup/
-│   ├── popup.html
-│   ├── popup.css
-│   └── popup.js
 ├── options/
-│   ├── options.html
-│   ├── options.css
-│   └── options.js
 ├── icons/
+├── LICENSE
 └── README.md
 ```
 
 ---
 
-## 📋 نقشه راه (Roadmap)
+## 🗺️ نقشه راه
 
-- [x] ساختار پایه و اتصال به Gemini
-- [ ] بهبود کیفیت صدا و مدیریت بافر
-- [ ] تشخیص گوینده + صدای ثابت برای هر شخصیت
-- [ ] پشتیبانی کامل از مدل Live Translate
-- [ ] نسخه موبایل بهینه‌تر برای Lemur
-- [ ] ویژگی‌های پولی (صدای پریمیوم، تاریخچه، ...)
+- [x] ساختار پایه + اتصال Live Translate
+- [x] آیکون‌های حرفه‌ای
+- [x] Ducking صدای اصلی
+- [ ] بهبود بافرینگ و کیفیت صدا
+- [ ] تشخیص گوینده + صدای ثابت per speaker
+- [ ] انتخاب صدای مختلف
+- [ ] نسخه بهینه‌تر برای موبایل
+- [ ] ویژگی‌های تجاری (پریمیوم)
 
 ---
 
 ## 📄 لایسنس
 
-MIT License — آزاد برای استفاده شخصی و تجاری.
+MIT — آزاد برای استفاده شخصی و تجاری.
 
----
-
-ساخته شده با ❤️ برای جامعه فارسی‌زبان
+ساخته‌شده با تمرکز روی کیفیت و تجربه کاربری فارسی‌زبانان.

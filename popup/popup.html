@@ -13,32 +13,22 @@
       <div class="subtitle">دوبله زنده هوشمند فارسی</div>
     </header>
 
-    <div class="status-card" id="statusCard">
-      <div class="status-indicator" id="statusIndicator"></div>
+    <div class="status-card">
+      <div class="status-dot" id="statusDot"></div>
       <span id="statusText">آماده</span>
     </div>
 
     <div class="controls">
-      <button id="startBtn" class="btn btn-primary">
-        <span class="btn-icon">▶</span>
-        شروع دوبله
-      </button>
-      <button id="stopBtn" class="btn btn-danger" style="display: none;">
-        <span class="btn-icon">■</span>
-        توقف
-      </button>
+      <button id="startBtn" class="btn primary">▶ شروع دوبله</button>
+      <button id="stopBtn" class="btn danger" hidden>■ توقف</button>
     </div>
 
-    <div class="info">
-      <p>کلید API خود را در تنظیمات وارد کنید.</p>
-      <a href="#" id="openOptions">تنظیمات و راهنما</a>
+    <div class="hint">
+      کلید API را در <a href="#" id="openSettings">تنظیمات</a> وارد کنید.
     </div>
 
-    <footer>
-      <small>نسخه ۱.۰.۰ • قدرت‌گرفته از Gemini</small>
-    </footer>
+    <footer>نسخه ۱.۰.۰ • Gemini Live Translate</footer>
   </div>
-
   <script src="popup.js"></script>
 </body>
 </html>

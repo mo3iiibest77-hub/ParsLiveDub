@@ -1,81 +1,66 @@
 const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
+const stopBtn  = document.getElementById('stopBtn');
 const statusText = document.getElementById('statusText');
-const statusIndicator = document.getElementById('statusIndicator');
-const openOptions = document.getElementById('openOptions');
+const statusDot  = document.getElementById('statusDot');
+const openSettings = document.getElementById('openSettings');
 
-async function updateUI() {
-  const status = await chrome.runtime.sendMessage({ type: 'GET_STATUS' });
-  
-  if (status.isActive) {
-    startBtn.style.display = 'none';
-    stopBtn.style.display = 'flex';
+async function refresh() {
+  const st = await chrome.runtime.sendMessage({ type: 'GET_STATUS' });
+  if (st.isActive) {
+    startBtn.hidden = true;
+    stopBtn.hidden = false;
     statusText.textContent = 'در حال دوبله...';
-    statusIndicator.classList.add('active');
-    statusIndicator.classList.remove('error');
+    statusDot.className = 'status-dot on';
   } else {
-    startBtn.style.display = 'flex';
-    stopBtn.style.display = 'none';
+    startBtn.hidden = false;
+    stopBtn.hidden = true;
     statusText.textContent = 'آماده';
-    statusIndicator.classList.remove('active', 'error');
+    statusDot.className = 'status-dot';
   }
 }
 
 startBtn.addEventListener('click', async () => {
   startBtn.disabled = true;
-  statusText.textContent = 'در حال شروع...';
-  
+  statusText.textContent = 'در حال اتصال...';
   try {
-    // Get current active tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    
-    // Get API key
     const { apiKey } = await chrome.runtime.sendMessage({ type: 'GET_API_KEY' });
-    
     if (!apiKey) {
-      statusText.textContent = 'کلید API تنظیم نشده!';
-      statusIndicator.classList.add('error');
-      startBtn.disabled = false;
-      // Open options
+      statusText.textContent = 'کلید API تنظیم نشده';
+      statusDot.className = 'status-dot err';
       chrome.runtime.openOptionsPage();
+      startBtn.disabled = false;
       return;
     }
-    
-    const result = await chrome.runtime.sendMessage({
+    const res = await chrome.runtime.sendMessage({
       type: 'START_DUBBING',
       tabId: tab.id,
       apiKey,
       targetLang: 'fa'
     });
-    
-    if (result.success) {
-      await updateUI();
-    } else {
-      statusText.textContent = result.error || 'خطا در شروع';
-      statusIndicator.classList.add('error');
+    if (!res.success) {
+      statusText.textContent = res.error || 'خطا';
+      statusDot.className = 'status-dot err';
     }
-  } catch (err) {
-    statusText.textContent = 'خطا: ' + err.message;
-    statusIndicator.classList.add('error');
+    await refresh();
+  } catch (e) {
+    statusText.textContent = 'خطا: ' + e.message;
+    statusDot.className = 'status-dot err';
   }
-  
   startBtn.disabled = false;
 });
 
 stopBtn.addEventListener('click', async () => {
   stopBtn.disabled = true;
   await chrome.runtime.sendMessage({ type: 'STOP_DUBBING' });
-  await updateUI();
+  await refresh();
   stopBtn.disabled = false;
 });
 
-openOptions.addEventListener('click', (e) => {
+openSettings.addEventListener('click', (e) => {
   e.preventDefault();
   chrome.runtime.openOptionsPage();
 });
 
-// Initial UI update
-updateUI();
-
-// Refresh status every 2 seconds while popup is open
-setInterval(updateUI, 2000);
+refresh();
+setInterval(refresh, 2000);
