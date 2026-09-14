@@ -12,7 +12,7 @@
       <div class="mark">PLD</div>
       <div>
         <h1>ParsLiveDub</h1>
-        <p class="tag">Live tab dubbing · 70+ languages</p>
+        <p class="tag">Live dub · lipsync · 70+ languages</p>
       </div>
     </header>
 
@@ -21,6 +21,7 @@
       <span id="statusText">Ready</span>
     </div>
     <p id="errorText" class="error" hidden></p>
+    <p id="metaText" class="meta" hidden></p>
 
     <label class="field">
       Target language
@@ -32,14 +33,44 @@
       <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off">
     </label>
 
+    <label class="switch-row">
+      <span>
+        Lipsync video
+        <small>Delay picture to match Gemini, not the captured audio</small>
+      </span>
+      <input id="lipsyncToggle" type="checkbox" checked>
+    </label>
+
+    <label class="field">
+      Sync delay
+      <select id="delaySelect">
+        <option value="0">Auto (measure Gemini)</option>
+        <option value="2000">2.0 s</option>
+        <option value="2500">2.5 s</option>
+        <option value="2900">2.9 s</option>
+        <option value="3200">3.2 s</option>
+        <option value="3600">3.6 s</option>
+        <option value="4000">4.0 s</option>
+        <option value="4500">4.5 s</option>
+      </select>
+    </label>
+
+    <label class="switch-row">
+      <span>
+        Match male / female
+        <small>Pitch-correct if Gemini flips gender</small>
+      </span>
+      <input id="genderToggle" type="checkbox" checked>
+    </label>
+
     <button id="toggleBtn" class="primary">Start dubbing</button>
     <button id="testBtn" class="ghost" type="button">Test Gemini connection</button>
 
     <p class="hint">
-      Play the YouTube tab first. Turn off other dubbing extensions.
+      Play the video tab first. Turn off other dubbing extensions.
       Key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>.
     </p>
-    <footer>v1.5.0 · Gemini Live Translate</footer>
+    <footer>v1.6.0 · Gemini Live Translate</footer>
   </div>
   <script src="popup.js"></script>
 </body>
