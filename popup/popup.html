@@ -3,74 +3,136 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ParsLiveDub</title>
-  <link rel="stylesheet" href="popup.css">
+  <title>ParsLiveDub • Live Translation</title>
+  <link rel="stylesheet" href="popup-new.css">
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <div class="mark">PLD</div>
-      <div>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">PLD</div>
+      <div class="title-section">
         <h1>ParsLiveDub</h1>
-        <p class="tag">Live dub · lipsync · 70+ languages</p>
+        <div class="tagline">Live translation with lipsync • 70+ languages</div>
       </div>
-    </header>
-
-    <div id="statusCard" class="status idle">
-      <span id="statusDot" class="dot"></span>
-      <span id="statusText">Ready</span>
     </div>
-    <p id="errorText" class="error" hidden></p>
-    <p id="metaText" class="meta" hidden></p>
 
-    <label class="field">
-      Target language
-      <select id="langSelect"></select>
-    </label>
+    <!-- Status Card -->
+    <div id="statusCard" class="status-card idle">
+      <div id="statusIndicator" class="status-indicator idle"></div>
+      <div class="status-content">
+        <div id="statusPrimary" class="status-primary">Ready</div>
+        <div id="statusSecondary" class="status-secondary">Not active</div>
+      </div>
+    </div>
 
-    <label class="field">
-      Gemini API key
-      <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off">
-    </label>
+    <!-- Error Message -->
+    <div id="errorMessage" class="error-message" hidden>
+      <strong>Error:</strong> <span id="errorText"></span>
+    </div>
 
-    <label class="switch-row">
-      <span>
-        Lipsync video
-        <small>Delay picture to match Gemini, not the captured audio</small>
-      </span>
-      <input id="lipsyncToggle" type="checkbox" checked>
-    </label>
+    <!-- Stats -->
+    <div id="statsRow" class="stats-row" hidden>
+      <div class="stat-item">
+        <div id="delayStat" class="stat-value">—</div>
+        <div class="stat-label">Sync delay</div>
+      </div>
+      <div class="stat-item">
+        <div id="genderStat" class="stat-value">—</div>
+        <div class="stat-label">Voice match</div>
+      </div>
+      <div class="stat-item">
+        <div id="qualityStat" class="stat-value">—</div>
+        <div class="stat-label">Quality</div>
+      </div>
+    </div>
 
-    <label class="field">
-      Sync delay
-      <select id="delaySelect">
-        <option value="0">Auto (measure Gemini)</option>
-        <option value="2000">2.0 s</option>
-        <option value="2500">2.5 s</option>
-        <option value="2900">2.9 s</option>
-        <option value="3200">3.2 s</option>
-        <option value="3600">3.6 s</option>
-        <option value="4000">4.0 s</option>
-        <option value="4500">4.5 s</option>
+    <!-- Language Selection -->
+    <div class="form-section">
+      <label class="form-label">
+        Target language
+        <span class="form-help">Select language for translation</span>
+      </label>
+      <select id="langSelect" class="form-select"></select>
+    </div>
+
+    <!-- API Key -->
+    <div class="form-section">
+      <label class="form-label">
+        Gemini API key
+        <span class="form-help">Required for Google Gemini Live Translate</span>
+      </label>
+      <input id="apiKey" type="password" class="form-input" placeholder="AIza..." autocomplete="off">
+    </div>
+
+    <!-- Sync Offset -->
+    <div class="form-section">
+      <label class="form-label">
+        Video sync offset
+        <span class="form-help">Adjust if lipsync appears unnatural</span>
+      </label>
+      <select id="delaySelect" class="form-select">
+        <option value="0">Auto • Let Gemini decide</option>
+        <option value="2000">Fast • 2.0 seconds</option>
+        <option value="2500">Standard • 2.5 seconds</option>
+        <option value="2900">Default • 2.9 seconds</option>
+        <option value="3200">Natural • 3.2 seconds</option>
+        <option value="3600">Slow • 3.6 seconds</option>
+        <option value="4000">Extra • 4.0 seconds</option>
       </select>
-    </label>
+    </div>
 
-    <label class="switch-row">
-      <span>
-        Match male / female
-        <small>Pitch-correct if Gemini flips gender</small>
-      </span>
-      <input id="genderToggle" type="checkbox" checked>
-    </label>
+    <!-- Toggles -->
+    <div class="toggle-row">
+      <div class="toggle-label">
+        <strong>Lipsync video</strong>
+        <small>Delay picture to match translation timing</small>
+      </div>
+      <label class="toggle-switch">
+        <input id="lipsyncToggle" type="checkbox" checked>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
 
-    <button id="toggleBtn" class="primary">Start dubbing</button>
-    <button id="testBtn" class="ghost" type="button">Test Gemini connection</button>
+    <div class="toggle-row">
+      <div class="toggle-label">
+        <strong>Gender voice match</strong>
+        <small>Pitch-correct if Gemini flips male/female</small>
+      </div>
+      <label class="toggle-switch">
+        <input id="genderToggle" type="checkbox" checked>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
 
-    <p class="hint">
-      Play the video tab first. Refresh YouTube after installing. Turn off other dubbing extensions.
-      Key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>.
-    </p>
-    <footer>v1.6.6 · Gemini Live Translate</footer>
+    <!-- Buttons -->
+    <div class="button-group">
+      <button id="toggleBtn" class="primary-button">
+        <span id="toggleIcon">▶</span>
+        <span id="toggleText">Start Live Dubbing</span>
+      </button>
+      <button id="testBtn" class="secondary-button">Test Connection</button>
+    </div>
+
+    <!-- Help/Onboarding -->
+    <div class="help-section">
+      <div class="help-title">📍 Need help?</div>
+      <div class="help-text">
+        1. Get API key from <a href="https://aistudio.google.com/apikey" target="_blank" class="help-link">Google AI Studio</a>
+      </div>
+      <div class="help-text">
+        2. Play YouTube video first before starting
+      </div>
+      <div class="help-text">
+        3. Mobile: enable site access for generativelanguage.googleapis.com in Lemur
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      v1.6.7 • Gemini Live Translate •
+      <a href="https://github.com/mo3iiibest77-hub/ParsLiveDub" target="_blank" class="help-link">GitHub</a>
+    </div>
   </div>
   <script src="popup.js"></script>
 </body>
