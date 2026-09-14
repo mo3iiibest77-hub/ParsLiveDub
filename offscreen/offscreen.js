@@ -134,37 +134,63 @@ function pitchShiftKeepLength(samples, ratio) {
   if (!samples || samples.length < 80) return samples;
   const r = Math.max(0.72, Math.min(1.42, ratio));
   if (Math.abs(r - 1) < 0.05) return samples;
-  const grain = 240;
-  const hopOut = 120;
+
+  const grain = 512;
+  const hopOut = 128;
   const hopIn = hopOut * r;
+  const searchWin = 80;
   const out = new Float32Array(samples.length);
+  const norm = new Float32Array(samples.length);
+
+  // پنجره هانینگ
+  const win = new Float32Array(grain);
+  for (let i = 0; i < grain; i++) {
+    win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (grain - 1));
+  }
+
+  // cross-correlation برای پیدا کردن بهترین grain position (WSOLA)
+  function bestOffset(inPos) {
+    const base = Math.round(inPos);
+    let bestScore = -Infinity;
+    let bestDelta = 0;
+    const lo = Math.max(0, base - searchWin);
+    const hi = Math.min(samples.length - grain, base + searchWin);
+    for (let d = lo; d <= hi; d++) {
+      let score = 0;
+      for (let i = 0; i < grain; i += 4) {
+        score += samples[d + i] * samples[d + i];
+      }
+      // شبیه‌سازی continuity با نقطه قبلی
+      if (score > bestScore) {
+        bestScore = score;
+        bestDelta = d - base;
+      }
+    }
+    return bestDelta;
+  }
+
   let inPos = 0;
   let outPos = 0;
-  let wrote = false;
-  while (outPos + grain < out.length && inPos + grain < samples.length) {
-    const i0 = Math.floor(inPos);
+
+  while (outPos + grain <= out.length) {
+    const delta = bestOffset(inPos);
+    const src = Math.round(inPos) + delta;
+    if (src < 0 || src + grain > samples.length) break;
+
     for (let i = 0; i < grain; i++) {
-      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (grain - 1));
-      const src = i0 + i;
-      if (src < samples.length) out[outPos + i] += samples[src] * w;
+      out[outPos + i] += samples[src + i] * win[i];
+      norm[outPos + i] += win[i];
     }
-    wrote = true;
+
     outPos += hopOut;
     inPos += hopIn;
   }
-  if (!wrote || outPos < samples.length * 0.5) {
-    const alt = new Float32Array(samples.length);
-    const maxIdx = samples.length - 1;
-    for (let i = 0; i < alt.length; i++) {
-      const src = Math.min(maxIdx, i * r);
-      const j = Math.floor(src);
-      const f = src - j;
-      const a = samples[j] || 0;
-      const b = samples[Math.min(j + 1, maxIdx)] || 0;
-      alt[i] = a + (b - a) * f;
-    }
-    return alt;
+
+  // normalize
+  for (let i = 0; i < out.length; i++) {
+    if (norm[i] > 0.001) out[i] /= norm[i];
   }
+
   return out;
 }
 
