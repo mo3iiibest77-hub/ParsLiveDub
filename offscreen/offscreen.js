@@ -1,97 +1,28 @@
-// ParsLiveDub Offscreen Engine v1.3
-// Official Live Translate protocol: 100ms PCM chunks, realtimeInput.audio, dual sample-rate
+const WS_URL_BASE =
+  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+const MODEL = "models/gemini-3.5-live-translate-preview";
+const INPUT_SAMPLE_RATE = 16000;
+const OUTPUT_SAMPLE_RATE = 24000;
+const CHUNK_MS = 100;
+const MAX_RECONNECT_ATTEMPTS = 4;
+const INPUT_HOLD_MAX_S = 5;
 
-let captureCtx = null;
-let playbackCtx = null;
-let mediaStream = null;
-let sourceNode = null;
-let gainNode = null;
-let processorNode = null;
-let muteNode = null;
-let websocket = null;
-let isActive = false;
-let apiKey = "";
-let targetLang = "fa";
-let nextPlayTime = 0;
-let reconnectAttempts = 0;
-let leftover = new Float32Array(0);
+let session = null;
 
-const MAX_RECONNECT = 5;
-const MODEL = "gemini-3.5-live-translate-preview";
-const CAPTURE_RATE = 16000;
-const PLAYBACK_RATE = 24000;
-const CHUNK_SAMPLES = 1600;
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "OFFSCREEN_START") {
-    startCapture(message.streamId, message.apiKey, message.targetLang)
-      .then(() => sendResponse({ success: true }))
-      .catch((err) => {
-        console.error("[ParsLiveDub] Start failed:", err);
-        sendResponse({ success: false, error: err.message || String(err) });
-      });
-    return true;
-  }
-  if (message.type === "OFFSCREEN_STOP") {
-    stopCapture();
-    sendResponse({ success: true });
-  }
-});
-
-async function startCapture(streamId, key, lang) {
-  if (isActive) stopCapture();
-
-  apiKey = key;
-  targetLang = lang || "fa";
-  isActive = true;
-  reconnectAttempts = 0;
-  nextPlayTime = 0;
-  leftover = new Float32Array(0);
-
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      mandatory: {
-        chromeMediaSource: "tab",
-        chromeMediaSourceId: streamId,
-      },
-    },
-  });
-
-  captureCtx = new AudioContext({ sampleRate: CAPTURE_RATE });
-  playbackCtx = new AudioContext({ sampleRate: PLAYBACK_RATE });
-  sourceNode = captureCtx.createMediaStreamSource(mediaStream);
-
-  gainNode = captureCtx.createGain();
-  gainNode.gain.value = 0.14;
-  sourceNode.connect(gainNode);
-  gainNode.connect(captureCtx.destination);
-
-  processorNode = captureCtx.createScriptProcessor(2048, 1, 1);
-  processorNode.onaudioprocess = (e) => {
-    if (!isActive || !websocket || websocket.readyState !== WebSocket.OPEN) return;
-    enqueueAndSend(e.inputBuffer.getChannelData(0));
-  };
-  sourceNode.connect(processorNode);
-  muteNode = captureCtx.createGain();
-  muteNode.gain.value = 0;
-  processorNode.connect(muteNode);
-  muteNode.connect(captureCtx.destination);
-
-  await connectWS();
-  console.log("[ParsLiveDub] v1.3 ready →", targetLang);
+function sendToBackground(message) {
+  try {
+    chrome.runtime.sendMessage({ target: "background", ...message }).catch(() => {});
+  } catch (_) {}
 }
 
-function floatTo16BitPCM(f32) {
-  const buf = new ArrayBuffer(f32.length * 2);
-  const view = new DataView(buf);
-  for (let i = 0; i < f32.length; i++) {
-    const s = Math.max(-1, Math.min(1, f32[i]));
-    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-  return new Uint8Array(buf);
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
-function bytesToBase64(bytes) {
+function uint8ArrayToBase64(bytes) {
   let binary = "";
   const step = 0x8000;
   for (let i = 0; i < bytes.length; i += step) {
@@ -100,167 +31,424 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-function enqueueAndSend(input) {
-  const merged = new Float32Array(leftover.length + input.length);
-  merged.set(leftover);
-  merged.set(input, leftover.length);
-  let offset = 0;
-  while (offset + CHUNK_SAMPLES <= merged.length) {
-    const slice = merged.subarray(offset, offset + CHUNK_SAMPLES);
-    const pcm = floatTo16BitPCM(slice);
-    websocket.send(
-      JSON.stringify({
-        realtimeInput: {
-          audio: {
-            mimeType: "audio/pcm;rate=16000",
-            data: bytesToBase64(pcm),
-          },
-        },
-      }),
-    );
-    offset += CHUNK_SAMPLES;
+function downsampleTo16k(samples, fromRate) {
+  if (fromRate === INPUT_SAMPLE_RATE) return samples;
+  const ratio = fromRate / INPUT_SAMPLE_RATE;
+  const outLength = Math.max(1, Math.round(samples.length / ratio));
+  const out = new Float32Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    const src = i * ratio;
+    const i0 = Math.floor(src);
+    const i1 = Math.min(i0 + 1, samples.length - 1);
+    const frac = src - i0;
+    out[i] = samples[i0] * (1 - frac) + samples[i1] * frac;
   }
-  leftover = merged.slice(offset);
+  return out;
 }
 
-function connectWS() {
-  return new Promise((resolve, reject) => {
-    const url =
-      "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=" +
-      encodeURIComponent(apiKey);
-    websocket = new WebSocket(url);
+function floatTo16BitPCM(samples) {
+  const buffer = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Uint8Array(buffer);
+}
 
-    websocket.onopen = () => {
-      reconnectAttempts = 0;
-      websocket.send(
-        JSON.stringify({
-          setup: {
-            model: "models/" + MODEL,
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              inputAudioTranscription: {},
-              outputAudioTranscription: {},
-              translationConfig: {
-                targetLanguageCode: targetLang,
-                echoTargetLanguage: true,
-              },
+function pcm16BytesToFloat32(bytes) {
+  const usable = bytes.length - (bytes.length % 2);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, usable);
+  const out = new Float32Array(usable / 2);
+  for (let i = 0; i < out.length; i++) {
+    const s = view.getInt16(i * 2, true);
+    out[i] = s / (s < 0 ? 0x8000 : 0x7fff);
+  }
+  return out;
+}
+
+async function startSession({ tabId, streamId, apiKey, targetLanguageCode }) {
+  stopSessionInternal();
+
+  if (typeof apiKey !== "string" || !apiKey) {
+    throw new Error("No API key set. Open Settings and paste your Gemini key.");
+  }
+  if (typeof streamId !== "string" || !streamId) {
+    throw new Error("Could not obtain the tab audio stream.");
+  }
+  if (typeof targetLanguageCode !== "string" || !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(targetLanguageCode)) {
+    targetLanguageCode = "fa";
+  }
+
+  sendToBackground({ type: "status", status: "capturing" });
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      mandatory: {
+        chromeMediaSource: "tab",
+        chromeMediaSourceId: streamId,
+      },
+    },
+    video: false,
+  });
+
+  const captureContext = new AudioContext();
+  const playbackContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE, latencyHint: "playback" });
+  if (captureContext.state === "suspended") await captureContext.resume().catch(() => {});
+  if (playbackContext.state === "suspended") await playbackContext.resume().catch(() => {});
+
+  const sourceNode = captureContext.createMediaStreamSource(stream);
+  const monitorGain = captureContext.createGain();
+  monitorGain.gain.value = 0.12;
+  sourceNode.connect(monitorGain);
+  monitorGain.connect(captureContext.destination);
+
+  const s = {
+    tabId,
+    apiKey,
+    targetLanguageCode,
+    stream,
+    captureContext,
+    playbackContext,
+    sourceNode,
+    monitorGain,
+    captureNode: null,
+    silenceGain: null,
+    ws: null,
+    ready: false,
+    everReady: false,
+    closedByUs: false,
+    queue: [],
+    queuedLength: 0,
+    inputChunkSize: Math.round((captureContext.sampleRate * CHUNK_MS) / 1000),
+    nextPlayTime: 0,
+    playbackLead: 0.2,
+    reconnectAttempts: 0,
+    reconnectTimer: null,
+  };
+  session = s;
+
+  await attachCapture(s);
+
+  const [track] = stream.getAudioTracks();
+  if (track) {
+    track.addEventListener("ended", () => {
+      if (session === s) {
+        sendToBackground({ type: "ended", tabId: s.tabId });
+        stopSessionInternal();
+      }
+    });
+  }
+
+  sendToBackground({ type: "status", status: "connecting" });
+  connectWebSocket(s);
+}
+
+async function attachCapture(s) {
+  const onSamples = (samples) => onCapturedSamples(s, samples);
+
+  if (s.captureContext.audioWorklet) {
+    try {
+      await s.captureContext.audioWorklet.addModule("pcm-worklet.js");
+      const workletNode = new AudioWorkletNode(s.captureContext, "pcm-capture");
+      workletNode.port.onmessage = (event) => onSamples(event.data);
+      const silenceGain = s.captureContext.createGain();
+      silenceGain.gain.value = 0;
+      s.sourceNode.connect(workletNode);
+      workletNode.connect(silenceGain);
+      silenceGain.connect(s.captureContext.destination);
+      s.captureNode = workletNode;
+      s.silenceGain = silenceGain;
+      return;
+    } catch (err) {
+      console.warn("[ParsLiveDub] AudioWorklet failed, using ScriptProcessor", err);
+    }
+  }
+
+  const scriptNode = s.captureContext.createScriptProcessor(4096, 1, 1);
+  scriptNode.onaudioprocess = (event) => {
+    onSamples(new Float32Array(event.inputBuffer.getChannelData(0)));
+  };
+  const silenceGain = s.captureContext.createGain();
+  silenceGain.gain.value = 0;
+  s.sourceNode.connect(scriptNode);
+  scriptNode.connect(silenceGain);
+  silenceGain.connect(s.captureContext.destination);
+  s.captureNode = scriptNode;
+  s.silenceGain = silenceGain;
+}
+
+function connectWebSocket(s) {
+  s.ready = false;
+  const ws = new WebSocket(WS_URL_BASE + "?key=" + encodeURIComponent(s.apiKey));
+  ws.binaryType = "arraybuffer";
+  s.ws = ws;
+
+  ws.onopen = () => {
+    if (session !== s || s.ws !== ws) return;
+    // Transcription configs MUST sit at setup root.
+    // Putting them inside generationConfig is rejected:
+    // "Unknown name inputAudioTranscription"
+    ws.send(
+      JSON.stringify({
+        setup: {
+          model: MODEL,
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            translationConfig: {
+              targetLanguageCode: s.targetLanguageCode,
+              echoTargetLanguage: true,
             },
           },
-        }),
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+        },
+      })
+    );
+  };
+
+  ws.onmessage = (event) => {
+    if (session !== s || s.ws !== ws) return;
+    handleServerMessage(s, event.data);
+  };
+
+  ws.onerror = () => {
+    if (session !== s || s.ws !== ws) return;
+    if (!s.everReady) {
+      sendToBackground({
+        type: "error",
+        tabId: s.tabId,
+        message: "WebSocket error. Check VPN/network, then retry.",
+      });
+    }
+  };
+
+  ws.onclose = (event) => {
+    if (session !== s || s.ws !== ws || s.closedByUs) return;
+
+    if (!s.everReady) {
+      const reason = event.reason || "";
+      let message = "Gemini refused the connection.";
+      if (reason) message += " " + reason;
+      else message += " Check the API key in Settings. If Persian Live Dub works with this key, the previous ParsLiveDub setup payload was invalid — this build uses the working protocol.";
+      sendToBackground({ type: "error", tabId: s.tabId, message });
+      stopSessionInternal();
+      return;
+    }
+
+    if (s.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      sendToBackground({
+        type: "error",
+        tabId: s.tabId,
+        message: "Lost the Gemini connection and could not reconnect.",
+      });
+      stopSessionInternal();
+      return;
+    }
+
+    s.reconnectAttempts += 1;
+    sendToBackground({ type: "status", status: "reconnecting" });
+    const delay = Math.min(500 * 2 ** (s.reconnectAttempts - 1), 5000);
+    s.reconnectTimer = setTimeout(() => {
+      if (session === s && !s.closedByUs) connectWebSocket(s);
+    }, delay);
+  };
+}
+
+function onCapturedSamples(s, samples) {
+  if (session !== s) return;
+  s.queue.push(samples);
+  s.queuedLength += samples.length;
+
+  if (!s.ready || !s.ws || s.ws.readyState !== WebSocket.OPEN) {
+    const maxQueued = s.captureContext.sampleRate * INPUT_HOLD_MAX_S;
+    while (s.queuedLength > maxQueued && s.queue.length) {
+      s.queuedLength -= s.queue[0].length;
+      s.queue.shift();
+    }
+    return;
+  }
+
+  drainQueue(s);
+}
+
+function drainQueue(s) {
+  if (!s.ready || !s.ws || s.ws.readyState !== WebSocket.OPEN) return;
+
+  while (s.queuedLength >= s.inputChunkSize) {
+    const chunk = new Float32Array(s.inputChunkSize);
+    let filled = 0;
+    while (filled < s.inputChunkSize) {
+      const head = s.queue[0];
+      const need = s.inputChunkSize - filled;
+      if (head.length <= need) {
+        chunk.set(head, filled);
+        filled += head.length;
+        s.queue.shift();
+      } else {
+        chunk.set(head.subarray(0, need), filled);
+        s.queue[0] = head.subarray(need);
+        filled += need;
+      }
+    }
+    s.queuedLength -= s.inputChunkSize;
+
+    const pcmBytes = floatTo16BitPCM(downsampleTo16k(chunk, s.captureContext.sampleRate));
+    try {
+      s.ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: {
+              data: uint8ArrayToBase64(pcmBytes),
+              mimeType: "audio/pcm;rate=16000",
+            },
+          },
+        })
       );
-    };
+    } catch (_) {
+      break;
+    }
+  }
+}
 
-    websocket.onmessage = async (ev) => {
-      try {
-        const raw = typeof ev.data === "string" ? ev.data : await ev.data.text();
-        const data = JSON.parse(raw);
-        if (data.setupComplete) {
-          resolve();
-          return;
-        }
-        if (data.serverContent && data.serverContent.modelTurn && data.serverContent.modelTurn.parts) {
-          const parts = data.serverContent.modelTurn.parts;
-          for (let i = 0; i < parts.length; i++) {
-            const part = parts[i];
-            if (part.inlineData && part.inlineData.data) {
-              playRawPCM(base64ToAB(part.inlineData.data));
-            }
-          }
-        }
-      } catch (e) {
-        console.error("[ParsLiveDub] onmessage", e);
+async function handleServerMessage(s, data) {
+  let text;
+  if (typeof data === "string") {
+    text = data;
+  } else if (data instanceof Blob) {
+    try {
+      text = await data.text();
+    } catch (_) {
+      return;
+    }
+  } else {
+    try {
+      text = new TextDecoder().decode(data);
+    } catch (_) {
+      return;
+    }
+  }
+
+  let msg;
+  try {
+    msg = JSON.parse(text);
+  } catch (_) {
+    return;
+  }
+
+  if (msg.error && msg.error.message) {
+    sendToBackground({ type: "error", tabId: s.tabId, message: msg.error.message });
+    stopSessionInternal();
+    return;
+  }
+
+  if (msg.setupComplete) {
+    s.ready = true;
+    s.everReady = true;
+    s.reconnectAttempts = 0;
+    s.nextPlayTime = 0;
+    sendToBackground({ type: "ready", tabId: s.tabId });
+    drainQueue(s);
+    return;
+  }
+
+  if (msg.goAway) {
+    const oldWs = s.ws;
+    connectWebSocket(s);
+    try {
+      oldWs.close(1000);
+    } catch (_) {}
+    return;
+  }
+
+  const content = msg.serverContent || msg.server_content;
+  if (!content) return;
+
+  const turn = content.modelTurn || content.model_turn;
+  if (turn && Array.isArray(turn.parts)) {
+    for (let i = 0; i < turn.parts.length; i++) {
+      const part = turn.parts[i];
+      const inline = part.inlineData || part.inline_data;
+      if (inline && typeof inline.data === "string") {
+        playTranslatedAudio(s, inline.data);
       }
-    };
-
-    websocket.onerror = (e) => {
-      console.error("[ParsLiveDub] WS error", e);
-      reject(new Error("WebSocket failed"));
-    };
-
-    websocket.onclose = () => {
-      if (isActive && reconnectAttempts < MAX_RECONNECT) {
-        reconnectAttempts += 1;
-        setTimeout(() => connectWS().catch(console.error), 800 * reconnectAttempts);
-      }
-    };
-  });
-}
-
-function base64ToAB(b64) {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes.buffer;
-}
-
-function playRawPCM(arrayBuffer) {
-  if (!playbackCtx) return;
-  const int16 = new Int16Array(arrayBuffer);
-  if (!int16.length) return;
-  const float32 = new Float32Array(int16.length);
-  for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-  const buffer = playbackCtx.createBuffer(1, float32.length, PLAYBACK_RATE);
-  buffer.copyToChannel(float32, 0);
-  const src = playbackCtx.createBufferSource();
-  src.buffer = buffer;
-  src.connect(playbackCtx.destination);
-  const now = playbackCtx.currentTime;
-  if (nextPlayTime < now) nextPlayTime = now + 0.015;
-  src.start(nextPlayTime);
-  nextPlayTime += buffer.duration;
-
-  if (gainNode && captureCtx) {
-    const t = captureCtx.currentTime;
-    gainNode.gain.cancelScheduledValues(t);
-    gainNode.gain.setTargetAtTime(0.04, t, 0.025);
-    gainNode.gain.setTargetAtTime(0.14, t + buffer.duration + 0.05, 0.18);
+    }
   }
 }
 
-function stopCapture() {
-  isActive = false;
-  if (websocket) {
-    try {
-      websocket.close();
-    } catch (_) {}
-    websocket = null;
-  }
-  if (processorNode) {
-    try {
-      processorNode.disconnect();
-    } catch (_) {}
-    processorNode = null;
-  }
-  if (muteNode) {
-    try {
-      muteNode.disconnect();
-    } catch (_) {}
-    muteNode = null;
-  }
-  if (gainNode) {
-    try {
-      gainNode.disconnect();
-    } catch (_) {}
-    gainNode = null;
-  }
-  if (sourceNode) {
-    try {
-      sourceNode.disconnect();
-    } catch (_) {}
-    sourceNode = null;
-  }
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((t) => t.stop());
-    mediaStream = null;
-  }
-  if (captureCtx) {
-    captureCtx.close().catch(function () {});
-    captureCtx = null;
-  }
-  if (playbackCtx) {
-    playbackCtx.close().catch(function () {});
-    playbackCtx = null;
-  }
-  leftover = new Float32Array(0);
-  nextPlayTime = 0;
+function playTranslatedAudio(s, base64Data) {
+  try {
+    const bytes = base64ToUint8Array(base64Data);
+    if (bytes.length < 2) return;
+    const samples = pcm16BytesToFloat32(bytes);
+    if (s.playbackContext.state === "suspended") s.playbackContext.resume().catch(() => {});
+
+    const buffer = s.playbackContext.createBuffer(1, samples.length, OUTPUT_SAMPLE_RATE);
+    buffer.copyToChannel(samples, 0);
+    const node = s.playbackContext.createBufferSource();
+    node.buffer = buffer;
+    node.connect(s.playbackContext.destination);
+
+    const now = s.playbackContext.currentTime;
+    if (s.nextPlayTime < now + 0.02) s.nextPlayTime = now + 0.08;
+    node.start(s.nextPlayTime);
+    s.nextPlayTime += buffer.duration;
+
+    if (s.monitorGain) {
+      const t = s.captureContext.currentTime;
+      s.monitorGain.gain.cancelScheduledValues(t);
+      s.monitorGain.gain.setTargetAtTime(0.04, t, 0.03);
+      s.monitorGain.gain.setTargetAtTime(0.12, t + buffer.duration + 0.04, 0.2);
+    }
+  } catch (_) {}
 }
+
+function stopSessionInternal() {
+  const s = session;
+  if (!s) return;
+  session = null;
+  s.closedByUs = true;
+  if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
+  try {
+    if (s.captureNode) {
+      if (s.captureNode.port) s.captureNode.port.onmessage = null;
+      s.captureNode.disconnect();
+    }
+    if (s.silenceGain) s.silenceGain.disconnect();
+    if (s.sourceNode) s.sourceNode.disconnect();
+    if (s.monitorGain) s.monitorGain.disconnect();
+  } catch (_) {}
+  try {
+    s.stream.getTracks().forEach((t) => t.stop());
+  } catch (_) {}
+  try {
+    s.captureContext.close();
+  } catch (_) {}
+  try {
+    s.playbackContext.close();
+  } catch (_) {}
+  try {
+    if (s.ws && (s.ws.readyState === WebSocket.OPEN || s.ws.readyState === WebSocket.CONNECTING)) {
+      s.ws.close(1000);
+    }
+  } catch (_) {}
+}
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (!message || message.target !== "offscreen") return;
+  if (sender && sender.id && sender.id !== chrome.runtime.id) return;
+
+  if (message.type === "start") {
+    startSession(message).catch((err) => {
+      sendToBackground({
+        type: "error",
+        tabId: message.tabId,
+        message: String((err && err.message) || err),
+      });
+      stopSessionInternal();
+    });
+  } else if (message.type === "stop") {
+    stopSessionInternal();
+    sendToBackground({ type: "stopped" });
+  }
+});

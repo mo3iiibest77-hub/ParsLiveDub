@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,27 +7,39 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="container">
+  <div class="wrap">
     <header>
-      <div class="logo">ParsLiveDub</div>
-      <div class="subtitle">دوبله زنده فارسی</div>
+      <div class="mark">PLD</div>
+      <div>
+        <h1>ParsLiveDub</h1>
+        <p class="tag">Live tab dubbing · 70+ languages</p>
+      </div>
     </header>
 
-    <div class="status-card">
-      <div class="status-dot" id="statusDot"></div>
-      <span id="statusText">آماده</span>
+    <div id="statusCard" class="status idle">
+      <span id="statusDot" class="dot"></span>
+      <span id="statusText">Ready</span>
     </div>
+    <p id="errorText" class="error" hidden></p>
 
-    <div class="controls">
-      <button id="startBtn" class="btn primary">شروع دوبله</button>
-      <button id="stopBtn" class="btn danger" hidden>توقف</button>
-    </div>
+    <label class="field">
+      Target language
+      <select id="langSelect"></select>
+    </label>
 
-    <div class="hint">
-      کلید API را در <a href="#" id="openSettings">تنظیمات</a> وارد کنید.
-    </div>
+    <label class="field">
+      Gemini API key
+      <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off">
+    </label>
 
-    <footer>نسخه ۱.۳.۰ • Gemini Live Translate</footer>
+    <button id="toggleBtn" class="primary">Start dubbing</button>
+    <button id="testBtn" class="ghost" type="button">Test Gemini connection</button>
+
+    <p class="hint">
+      Play the YouTube tab first. Turn off other dubbing extensions.
+      Key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>.
+    </p>
+    <footer>v1.5.0 · Gemini Live Translate</footer>
   </div>
   <script src="popup.js"></script>
 </body>

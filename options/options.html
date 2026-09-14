@@ -1,43 +1,33 @@
 <!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>تنظیمات ParsLiveDub</title>
+  <title>ParsLiveDub settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <div class="wrap">
-    <h1>🎙️ تنظیمات ParsLiveDub</h1>
-
+    <h1>ParsLiveDub settings</h1>
     <section class="card">
-      <h2>کلید Gemini API</h2>
-      <p class="desc">کلید رایگان را از <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> بگیرید و اینجا ذخیره کنید. کلید فقط روی دستگاه شما می‌ماند.</p>
+      <h2>Gemini API key</h2>
+      <p class="desc">Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. It stays on this device.</p>
       <div class="row">
-        <input type="password" id="keyInput" placeholder="AIzaSy...">
-        <button id="toggleBtn" type="button">نمایش</button>
+        <input id="keyInput" type="password" placeholder="AIzaSy...">
+        <button id="toggleBtn" type="button">Show</button>
       </div>
-      <button id="saveBtn" class="primary">ذخیره کلید</button>
+      <button id="saveBtn" class="primary">Save key</button>
+      <button id="testBtn" class="ghost" type="button">Test live connection</button>
       <div id="msg" class="msg"></div>
     </section>
-
     <section class="card">
-      <h2>نحوه استفاده</h2>
+      <h2>If dubbing fails on Lemur</h2>
       <ol>
-        <li>کلید API را ذخیره کنید.</li>
-        <li>به یوتیوب یا هر صفحه دارای صدا بروید.</li>
-        <li>روی آیکون افزونه کلیک کنید و «شروع دوبله» را بزنید.</li>
-        <li>صدا به صورت زنده به فارسی ترجمه و پخش می‌شود.</li>
+        <li>Turn off livdub, Persian Live Dub, and any other tab-audio extension.</li>
+        <li>Refresh the YouTube tab, start playback, then press Start.</li>
+        <li>Use Test live connection here. If that fails, the key or network is the issue.</li>
+        <li>If Lemur shows a site-access toggle for generativelanguage.googleapis.com, turn it on.</li>
       </ol>
-    </section>
-
-    <section class="card">
-      <h2>نکات</h2>
-      <ul>
-        <li>بهترین عملکرد با هدفون.</li>
-        <li>روی Chrome دسکتاپ و <strong>Lemur Browser</strong> اندروید تست شده.</li>
-        <li>هزینه بر اساس کلید خودتان محاسبه می‌شود (سطح رایگان معمولاً کافی است).</li>
-      </ul>
     </section>
   </div>
   <script src="options.js"></script>
