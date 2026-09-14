@@ -3,7 +3,7 @@ const WS_URL_BASE =
 const MODEL = "models/gemini-3.5-live-translate-preview";
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
-const CHUNK_MS = 100;
+const CHUNK_MS = 60;
 const MAX_RECONNECT_ATTEMPTS = 4;
 const INPUT_HOLD_MAX_S = 5;
 const DEFAULT_DELAY_MS = 2900;
@@ -83,11 +83,9 @@ function estimateF0(samples, sampleRate) {
   for (let i = 0; i < n; i++) energy += samples[i] * samples[i];
   const rms = Math.sqrt(energy / n);
   if (rms < 0.02) return 0;
-
   let mean = 0;
   for (let i = 0; i < n; i++) mean += samples[i];
   mean /= n;
-
   const minF = 75;
   const maxF = 320;
   const minLag = Math.max(2, Math.floor(sampleRate / maxF));
@@ -192,12 +190,10 @@ function emitLatency(s) {
 
 async function startSession(opts) {
   stopSessionInternal();
-
   const apiKey = opts.apiKey;
   let targetLanguageCode = opts.targetLanguageCode;
   const streamId = opts.streamId;
   const tabId = opts.tabId;
-
   if (typeof apiKey !== "string" || !apiKey) {
     throw new Error("No API key set. Open Settings and paste your Gemini key.");
   }
@@ -207,9 +203,7 @@ async function startSession(opts) {
   if (typeof targetLanguageCode !== "string" || !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(targetLanguageCode)) {
     targetLanguageCode = "fa";
   }
-
   sendToBackground({ type: "status", status: "capturing" });
-
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -219,18 +213,15 @@ async function startSession(opts) {
     },
     video: false,
   });
-
   const captureContext = new AudioContext();
-  const playbackContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE, latencyHint: "playback" });
+  const playbackContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE, latencyHint: "interactive" });
   if (captureContext.state === "suspended") await captureContext.resume().catch(() => {});
   if (playbackContext.state === "suspended") await playbackContext.resume().catch(() => {});
-
   const sourceNode = captureContext.createMediaStreamSource(stream);
   const monitorGain = captureContext.createGain();
   monitorGain.gain.value = 0.12;
   sourceNode.connect(monitorGain);
   monitorGain.connect(captureContext.destination);
-
   const s = {
     tabId,
     apiKey,
@@ -253,12 +244,13 @@ async function startSession(opts) {
     queuedLength: 0,
     inputChunkSize: Math.round((captureContext.sampleRate * CHUNK_MS) / 1000),
     nextPlayTime: 0,
-    playbackLead: 0.2,
+    playbackLead: 0.15,
     reconnectAttempts: 0,
     reconnectTimer: null,
     firstSendAt: 0,
     firstPlayAt: 0,
     measuredDelayMs: DEFAULT_DELAY_MS,
+    delayMeasures: [],
     srcAcc: new Float32Array(0),
     outAcc: new Float32Array(0),
     srcF0s: [],
@@ -269,9 +261,7 @@ async function startSession(opts) {
     lastLatencyEmit: 0,
   };
   session = s;
-
   await attachCapture(s);
-
   const [track] = stream.getAudioTracks();
   if (track) {
     track.addEventListener("ended", () => {
@@ -281,7 +271,6 @@ async function startSession(opts) {
       }
     });
   }
-
   sendToBackground({ type: "status", status: "connecting" });
   if (s.lipsync) emitLatency(s);
   connectWebSocket(s);
@@ -289,7 +278,6 @@ async function startSession(opts) {
 
 async function attachCapture(s) {
   const onSamples = (samples) => onCapturedSamples(s, samples);
-
   if (s.captureContext.audioWorklet) {
     try {
       await s.captureContext.audioWorklet.addModule("pcm-worklet.js");
@@ -307,8 +295,7 @@ async function attachCapture(s) {
       console.warn("[ParsLiveDub] AudioWorklet failed, using ScriptProcessor", err);
     }
   }
-
-  const scriptNode = s.captureContext.createScriptProcessor(4096, 1, 1);
+  const scriptNode = s.captureContext.createScriptProcessor(2048, 1, 1);
   scriptNode.onaudioprocess = (event) => {
     onSamples(new Float32Array(event.inputBuffer.getChannelData(0)));
   };
@@ -326,7 +313,6 @@ function connectWebSocket(s) {
   const ws = new WebSocket(WS_URL_BASE + "?key=" + encodeURIComponent(s.apiKey));
   ws.binaryType = "arraybuffer";
   s.ws = ws;
-
   ws.onopen = () => {
     if (session !== s || s.ws !== ws) return;
     ws.send(
@@ -346,12 +332,10 @@ function connectWebSocket(s) {
       })
     );
   };
-
   ws.onmessage = (event) => {
     if (session !== s || s.ws !== ws) return;
     handleServerMessage(s, event.data);
   };
-
   ws.onerror = () => {
     if (session !== s || s.ws !== ws) return;
     if (!s.everReady) {
@@ -362,10 +346,8 @@ function connectWebSocket(s) {
       });
     }
   };
-
   ws.onclose = (event) => {
     if (session !== s || s.ws !== ws || s.closedByUs) return;
-
     if (!s.everReady) {
       const reason = event.reason || "";
       let message = "Gemini refused the connection.";
@@ -375,7 +357,6 @@ function connectWebSocket(s) {
       stopSessionInternal();
       return;
     }
-
     if (s.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       sendToBackground({
         type: "error",
@@ -385,7 +366,6 @@ function connectWebSocket(s) {
       stopSessionInternal();
       return;
     }
-
     s.reconnectAttempts += 1;
     sendToBackground({ type: "status", status: "reconnecting" });
     const delay = Math.min(500 * 2 ** (s.reconnectAttempts - 1), 5000);
@@ -438,7 +418,6 @@ function onCapturedSamples(s, samples) {
   if (session !== s) return;
   s.queue.push(samples);
   s.queuedLength += samples.length;
-
   if (!s.ready || !s.ws || s.ws.readyState !== WebSocket.OPEN) {
     const maxQueued = s.captureContext.sampleRate * INPUT_HOLD_MAX_S;
     while (s.queuedLength > maxQueued && s.queue.length) {
@@ -447,13 +426,11 @@ function onCapturedSamples(s, samples) {
     }
     return;
   }
-
   drainQueue(s);
 }
 
 function drainQueue(s) {
   if (!s.ready || !s.ws || s.ws.readyState !== WebSocket.OPEN) return;
-
   while (s.queuedLength >= s.inputChunkSize) {
     const chunk = new Float32Array(s.inputChunkSize);
     let filled = 0;
@@ -471,7 +448,6 @@ function drainQueue(s) {
       }
     }
     s.queuedLength -= s.inputChunkSize;
-
     const pcm16 = downsampleTo16k(chunk, s.captureContext.sampleRate);
     observeSourcePitch(s, pcm16);
     const pcmBytes = floatTo16BitPCM(pcm16);
@@ -510,20 +486,17 @@ async function handleServerMessage(s, data) {
       return;
     }
   }
-
   let msg;
   try {
     msg = JSON.parse(text);
   } catch (_) {
     return;
   }
-
   if (msg.error && msg.error.message) {
     sendToBackground({ type: "error", tabId: s.tabId, message: msg.error.message });
     stopSessionInternal();
     return;
   }
-
   if (msg.setupComplete) {
     s.ready = true;
     s.everReady = true;
@@ -533,7 +506,6 @@ async function handleServerMessage(s, data) {
     drainQueue(s);
     return;
   }
-
   if (msg.goAway) {
     const oldWs = s.ws;
     connectWebSocket(s);
@@ -542,10 +514,8 @@ async function handleServerMessage(s, data) {
     } catch (_) {}
     return;
   }
-
   const content = msg.serverContent || msg.server_content;
   if (!content) return;
-
   const turn = content.modelTurn || content.model_turn;
   if (turn && Array.isArray(turn.parts)) {
     for (let i = 0; i < turn.parts.length; i++) {
@@ -568,27 +538,28 @@ function playTranslatedAudio(s, base64Data) {
       samples = pitchShiftKeepLength(samples, s.pitchRatio);
     }
     if (s.playbackContext.state === "suspended") s.playbackContext.resume().catch(() => {});
-
     const buffer = s.playbackContext.createBuffer(1, samples.length, OUTPUT_SAMPLE_RATE);
     buffer.copyToChannel(samples, 0);
     const node = s.playbackContext.createBufferSource();
     node.buffer = buffer;
     node.connect(s.playbackContext.destination);
-
     const now = s.playbackContext.currentTime;
-    if (s.nextPlayTime < now + 0.02) s.nextPlayTime = now + 0.08;
+    if (s.nextPlayTime < now + 0.05) s.nextPlayTime = now + 0.15;
     node.start(s.nextPlayTime);
     s.nextPlayTime += buffer.duration;
-
-    if (!s.firstPlayAt && s.firstSendAt) {
-      s.firstPlayAt = performance.now();
-      s.measuredDelayMs = Math.max(1200, Math.min(5000, s.firstPlayAt - s.firstSendAt));
-      emitLatency(s);
+    if (s.firstSendAt && s.delayMeasures.length < 6) {
+      s.delayMeasures.push(performance.now() - s.firstSendAt);
+      if (!s.firstPlayAt) s.firstPlayAt = performance.now();
+      if (s.delayMeasures.length >= 3) {
+        const sorted = s.delayMeasures.slice().sort((a, b) => a - b);
+        const mid = sorted[Math.floor(sorted.length / 2)];
+        s.measuredDelayMs = Math.max(1200, Math.min(5000, mid));
+        emitLatency(s);
+      }
     } else if (s.lipsync && performance.now() - s.lastLatencyEmit > 800) {
       s.lastLatencyEmit = performance.now();
       emitLatency(s);
     }
-
     if (s.monitorGain) {
       const t = s.captureContext.currentTime;
       s.monitorGain.gain.cancelScheduledValues(t);
@@ -632,7 +603,6 @@ function stopSessionInternal() {
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (!message || message.target !== "offscreen") return;
   if (sender && sender.id && sender.id !== chrome.runtime.id) return;
-
   if (message.type === "start") {
     startSession(message).catch((err) => {
       sendToBackground({

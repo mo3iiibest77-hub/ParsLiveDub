@@ -378,6 +378,15 @@
     if (state.mobileMode) {
       state.aborted = true;
       updateHud();
+      if (video && state.delayMs > 0) {
+        const lagSec = state.delayMs / 1000;
+        const slowRate = Math.max(0.75, 1 - lagSec / 25);
+        video.playbackRate = slowRate;
+        const restoreMs = lagSec * 1000 + 800;
+        setTimeout(() => {
+          try { if (video) video.playbackRate = 1.0; } catch (_) {}
+        }, restoreMs);
+      }
     }
 
     if (!state.running) {
