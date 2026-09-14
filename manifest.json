@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ParsLiveDub",
-  "version": "1.0.0",
-  "description": "دوبله زنده حرفه‌ای ویدیوها به فارسی با هوش مصنوعی Gemini Live Translate. تأخیر کم، کیفیت بالا، مناسب دسکتاپ و اندروید (Lemur Browser).",
+  "version": "1.2.0",
+  "description": "دوبله زنده حرفه‌ای ویدیوها به فارسی با Gemini Live Translate (v1.2). کیفیت بالا، تأخیر کم، مناسب دسکتاپ و Lemur Browser.",
   "permissions": [
     "tabCapture",
     "offscreen",

@@ -1,7 +1,8 @@
-// ParsLiveDub Offscreen Engine v1.1
-// Improved audio handling for Gemini Live Translate (raw PCM support)
+// ParsLiveDub Offscreen Engine v1.2
+// Proper dual sample-rate (16kHz capture → 24kHz playback) + robust PCM handling
 
-let audioContext = null;
+let captureCtx = null;   // 16 kHz for sending to Gemini
+let playbackCtx = null;  // 24 kHz for playing translated audio
 let mediaStream = null;
 let sourceNode = null;
 let gainNode = null;
@@ -12,11 +13,11 @@ let apiKey = '';
 let targetLang = 'fa';
 let nextPlayTime = 0;
 let reconnectAttempts = 0;
+
 const MAX_RECONNECT = 5;
 const MODEL = 'gemini-3.5-live-translate-preview';
-
-// Playback sample rate from Gemini Live Translate is usually 24kHz
-const PLAYBACK_SAMPLE_RATE = 24000;
+const CAPTURE_RATE = 16000;
+const PLAYBACK_RATE = 24000;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'OFFSCREEN_START') {
@@ -24,7 +25,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => sendResponse({ success: true }))
       .catch(err => {
         console.error('[ParsLiveDub] Start failed:', err);
-        sendResponse({ success: false, error: err.message });
+        sendResponse({ success: false, error: err.message || String(err) });
       });
     return true;
   }
@@ -43,6 +44,7 @@ async function startCapture(streamId, key, lang = 'fa') {
   reconnectAttempts = 0;
   nextPlayTime = 0;
 
+  // 1. Capture tab audio
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -52,18 +54,22 @@ async function startCapture(streamId, key, lang = 'fa') {
     }
   });
 
-  // Input context at 16kHz for sending to Gemini
-  audioContext = new AudioContext({ sampleRate: 16000 });
-  sourceNode = audioContext.createMediaStreamSource(mediaStream);
+  // 2. Capture context (16 kHz) – what we send to Gemini
+  captureCtx = new AudioContext({ sampleRate: CAPTURE_RATE });
+  sourceNode = captureCtx.createMediaStreamSource(mediaStream);
 
   // Duck original audio
-  gainNode = audioContext.createGain();
-  gainNode.gain.value = 0.15;
+  gainNode = captureCtx.createGain();
+  gainNode.gain.value = 0.14;
   sourceNode.connect(gainNode);
-  gainNode.connect(audioContext.destination);
+  gainNode.connect(captureCtx.destination);
 
+  // 3. Playback context (24 kHz) – for natural Gemini output
+  playbackCtx = new AudioContext({ sampleRate: PLAYBACK_RATE });
+
+  // 4. Extract PCM and send
   const bufferSize = 4096;
-  processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+  processorNode = captureCtx.createScriptProcessor(bufferSize, 1, 1);
   processorNode.onaudioprocess = (e) => {
     if (!isActive || !websocket || websocket.readyState !== WebSocket.OPEN) return;
     const pcm = floatTo16BitPCM(e.inputBuffer.getChannelData(0));
@@ -72,7 +78,7 @@ async function startCapture(streamId, key, lang = 'fa') {
   sourceNode.connect(processorNode);
 
   await connectWS();
-  console.log('[ParsLiveDub] Engine started → Live Translate to', targetLang);
+  console.log('[ParsLiveDub] v1.2 Engine ready – Live Translate →', targetLang);
 }
 
 function floatTo16BitPCM(f32) {
@@ -110,33 +116,33 @@ function connectWS() {
       resolve();
     };
 
-    websocket.onmessage = async (ev) => {
+    websocket.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
 
         if (data.setupComplete) {
-          console.log('[ParsLiveDub] Setup complete – ready');
+          console.log('[ParsLiveDub] Setup complete');
           return;
         }
 
         if (data.serverContent?.modelTurn?.parts) {
           for (const part of data.serverContent.modelTurn.parts) {
-            if (part.inlineData && part.inlineData.data) {
-              const mime = part.inlineData.mimeType || '';
+            if (part.inlineData?.data) {
+              const mime = (part.inlineData.mimeType || '').toLowerCase();
               const ab = base64ToAB(part.inlineData.data);
 
-              if (mime.includes('pcm') || mime.includes('raw') || !mime.includes('mpeg') && !mime.includes('mp3') && !mime.includes('wav')) {
-                // Raw PCM path (most common for Live API)
-                playRawPCM(ab, PLAYBACK_SAMPLE_RATE);
+              // Live Translate almost always returns raw PCM
+              if (mime.includes('pcm') || mime.includes('raw') || mime === '' || 
+                  (!mime.includes('mpeg') && !mime.includes('mp3') && !mime.includes('wav') && !mime.includes('ogg'))) {
+                playRawPCM(ab);
               } else {
-                // Encoded audio – try decode
                 playEncoded(ab);
               }
             }
           }
         }
       } catch (e) {
-        console.error('[ParsLiveDub] message error', e);
+        console.error('[ParsLiveDub] onmessage error', e);
       }
     };
 
@@ -149,10 +155,8 @@ function connectWS() {
       console.log('[ParsLiveDub] WS closed');
       if (isActive && reconnectAttempts < MAX_RECONNECT) {
         reconnectAttempts++;
-        console.log(`[ParsLiveDub] Reconnect attempt ${reconnectAttempts}`);
-        setTimeout(() => {
-          connectWS().catch(console.error);
-        }, 1000 * reconnectAttempts);
+        console.log(`[ParsLiveDub] Reconnecting (${reconnectAttempts}/${MAX_RECONNECT})...`);
+        setTimeout(() => connectWS().catch(console.error), 800 * reconnectAttempts);
       }
     };
   });
@@ -160,6 +164,7 @@ function connectWS() {
 
 function sendChunk(pcm16) {
   if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
+
   let binary = '';
   for (let i = 0; i < pcm16.length; i++) binary += String.fromCharCode(pcm16[i]);
   const b64 = btoa(binary);
@@ -181,57 +186,59 @@ function base64ToAB(b64) {
   return bytes.buffer;
 }
 
-// Play raw 16-bit PCM (little-endian) at given sample rate
-function playRawPCM(arrayBuffer, sampleRate = 24000) {
-  if (!audioContext) return;
+// Play raw 16-bit little-endian PCM at 24 kHz
+function playRawPCM(arrayBuffer) {
+  if (!playbackCtx) return;
 
   const int16 = new Int16Array(arrayBuffer);
   const float32 = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i++) {
-    float32[i] = int16[i] / 32768;
+    float32[i] = int16[i] / 32768.0;
   }
 
-  const buffer = audioContext.createBuffer(1, float32.length, sampleRate);
+  const buffer = playbackCtx.createBuffer(1, float32.length, PLAYBACK_RATE);
   buffer.copyToChannel(float32, 0);
 
-  const src = audioContext.createBufferSource();
+  const src = playbackCtx.createBufferSource();
   src.buffer = buffer;
-  src.connect(audioContext.destination);
+  src.connect(playbackCtx.destination);
 
-  const now = audioContext.currentTime;
-  if (nextPlayTime < now) nextPlayTime = now + 0.02;
+  const now = playbackCtx.currentTime;
+  if (nextPlayTime < now) nextPlayTime = now + 0.015;
   src.start(nextPlayTime);
   nextPlayTime += buffer.duration;
 
-  // Duck original while speaking
-  if (gainNode) {
-    gainNode.gain.cancelScheduledValues(now);
-    gainNode.gain.setTargetAtTime(0.05, now, 0.03);
-    gainNode.gain.setTargetAtTime(0.15, nextPlayTime, 0.2);
+  // Smooth ducking of original audio
+  if (gainNode && captureCtx) {
+    const t = captureCtx.currentTime;
+    gainNode.gain.cancelScheduledValues(t);
+    gainNode.gain.setTargetAtTime(0.04, t, 0.025);
+    gainNode.gain.setTargetAtTime(0.14, t + buffer.duration + 0.05, 0.18);
   }
 }
 
 async function playEncoded(arrayBuffer) {
-  if (!audioContext) return;
+  if (!playbackCtx) return;
   try {
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
-    const src = audioContext.createBufferSource();
+    const audioBuffer = await playbackCtx.decodeAudioData(arrayBuffer.slice(0));
+    const src = playbackCtx.createBufferSource();
     src.buffer = audioBuffer;
-    src.connect(audioContext.destination);
+    src.connect(playbackCtx.destination);
 
-    const now = audioContext.currentTime;
-    if (nextPlayTime < now) nextPlayTime = now + 0.02;
+    const now = playbackCtx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.015;
     src.start(nextPlayTime);
     nextPlayTime += audioBuffer.duration;
 
-    if (gainNode) {
-      gainNode.gain.cancelScheduledValues(now);
-      gainNode.gain.setTargetAtTime(0.05, now, 0.03);
-      gainNode.gain.setTargetAtTime(0.15, nextPlayTime, 0.2);
+    if (gainNode && captureCtx) {
+      const t = captureCtx.currentTime;
+      gainNode.gain.cancelScheduledValues(t);
+      gainNode.gain.setTargetAtTime(0.04, t, 0.025);
+      gainNode.gain.setTargetAtTime(0.14, t + audioBuffer.duration + 0.05, 0.18);
     }
   } catch (e) {
-    console.warn('[ParsLiveDub] decode failed, trying raw PCM', e.message);
-    playRawPCM(arrayBuffer, PLAYBACK_SAMPLE_RATE);
+    console.warn('[ParsLiveDub] decode failed → fallback to raw PCM', e.message);
+    playRawPCM(arrayBuffer);
   }
 }
 
@@ -243,25 +250,29 @@ function stopCapture() {
     websocket = null;
   }
   if (processorNode) {
-    processorNode.disconnect();
+    try { processorNode.disconnect(); } catch (_) {}
     processorNode = null;
   }
   if (gainNode) {
-    gainNode.disconnect();
+    try { gainNode.disconnect(); } catch (_) {}
     gainNode = null;
   }
   if (sourceNode) {
-    sourceNode.disconnect();
+    try { sourceNode.disconnect(); } catch (_) {}
     sourceNode = null;
   }
   if (mediaStream) {
     mediaStream.getTracks().forEach(t => t.stop());
     mediaStream = null;
   }
-  if (audioContext) {
-    audioContext.close().catch(() => {});
-    audioContext = null;
+  if (captureCtx) {
+    captureCtx.close().catch(() => {});
+    captureCtx = null;
+  }
+  if (playbackCtx) {
+    playbackCtx.close().catch(() => {});
+    playbackCtx = null;
   }
   nextPlayTime = 0;
-  console.log('[ParsLiveDub] Engine stopped');
+  console.log('[ParsLiveDub] Engine fully stopped');
 }
