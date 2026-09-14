@@ -253,13 +253,26 @@ toggleBtn.addEventListener("click", () => {
 
     chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }, (streamId) => {
       if (chrome.runtime.lastError || !streamId) {
-        const raw =
-          (chrome.runtime.lastError && chrome.runtime.lastError.message) || "Could not capture this tab.";
-        let message = raw;
-        if (/active stream/i.test(raw)) {
-          message =
-            "Another extension is already capturing this tab. Turn off livdub / Persian Live Dub, refresh YouTube, then retry.";
+        const err = chrome.runtime.lastError?.message || "Could not capture this tab.";
+        let message = "";
+
+        // Map common tabCapture errors to clear user instructions
+        if (/active stream/i.test(err)) {
+          message = "Another extension is capturing audio now. ";
+          message += "Turn off Persian Live Dub, livdub, or other dubbing extensions, ";
+          message += "REFRESH the YouTube tab, then try again.";
+        } else if (/permission/i.test(err)) {
+          message = "Tab capture permission denied. ";
+          message += "If in Lemur, ensure 'Allow access to site audio' is ON for YouTube.";
+        } else if (/already in use/i.test(err)) {
+          message = "Audio device is busy. Close any apps recording audio, then retry.";
+        } else if (/not supported/i.test(err)) {
+          message = "Tab audio capture not supported on this page. ";
+          message += "YouTube should work; ensure it's loaded over HTTPS.";
+        } else {
+          message = "Cannot capture tab audio: " + err;
         }
+
         setUi({ pldActive: false, pldStatus: "error", pldError: message });
         return;
       }

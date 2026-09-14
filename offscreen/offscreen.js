@@ -135,6 +135,11 @@ function pitchShiftKeepLength(samples, ratio) {
   const r = Math.max(0.72, Math.min(1.42, ratio));
   if (Math.abs(r - 1) < 0.05) return samples;
 
+  // Safety check: if ratio is extreme and signal is weak, pass through
+  const energy = samples.reduce((sum, val) => sum + val * val, 0) / samples.length;
+  if (energy < 0.0001) return samples;
+  if (Math.abs(r - 1) > 0.3 && energy < 0.001) return samples.slice();
+
   const grain = 512;
   const hopOut = 128;
   const hopIn = hopOut * r;
@@ -148,24 +153,57 @@ function pitchShiftKeepLength(samples, ratio) {
     win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (grain - 1));
   }
 
-  // cross-correlation برای پیدا کردن بهترین grain position (WSOLA)
+  // True WSOLA cross-correlation for best continuity
   function bestOffset(inPos) {
     const base = Math.round(inPos);
-    let bestScore = -Infinity;
-    let bestDelta = 0;
     const lo = Math.max(0, base - searchWin);
     const hi = Math.min(samples.length - grain, base + searchWin);
-    for (let d = lo; d <= hi; d++) {
-      let score = 0;
-      for (let i = 0; i < grain; i += 4) {
-        score += samples[d + i] * samples[d + i];
-      }
-      // شبیه‌سازی continuity با نقطه قبلی
-      if (score > bestScore) {
-        bestScore = score;
-        bestDelta = d - base;
+
+    // Look at overlap region with previous grain
+    const overlap = hopOut;
+    let bestCorr = -Infinity;
+    let bestDelta = 0;
+
+    // Only correlate if we have previous output
+    if (outPos > 0) {
+      for (let d = lo; d <= hi; d++) {
+        let corr = 0;
+        // Correlate overlap region against previous output
+        for (let i = 0; i < overlap; i++) {
+          corr += samples[d + i] * out[outPos + i - hopOut];
+        }
+        // Normalize by energy
+        let energySrc = 0, energyPrev = 0;
+        for (let i = 0; i < overlap; i++) {
+          energySrc += samples[d + i] * samples[d + i];
+          energyPrev += out[outPos + i - hopOut] * out[outPos + i - hopOut];
+        }
+        const norm = Math.sqrt(energySrc * energyPrev);
+        if (norm > 1e-6) corr = Math.abs(corr) / norm;
+
+        if (corr > bestCorr) {
+          bestCorr = corr;
+          bestDelta = d - base;
+        }
       }
     }
+
+    // If no previous output or weak correlation, use simple energy search
+    if (bestCorr < 0.3 || bestDelta === 0) {
+      bestDelta = 0; // Default to base position
+      let bestEnergy = -Infinity;
+      for (let d = lo; d <= hi; d++) {
+        let energy = 0;
+        for (let i = 0; i < grain; i += 4) {
+          energy += samples[d + i] * samples[d + i];
+        }
+        if (energy > bestEnergy) {
+          bestEnergy = energy;
+          bestDelta = d - base;
+        }
+      }
+    }
+
     return bestDelta;
   }
 
@@ -362,13 +400,23 @@ function connectWebSocket(s) {
     if (session !== s || s.ws !== ws) return;
     handleServerMessage(s, event.data);
   };
-  ws.onerror = () => {
+  ws.onerror = (event) => {
     if (session !== s || s.ws !== ws) return;
     if (!s.everReady) {
+      let message = "Cannot connect to Gemini Live. ";
+      // Try to infer common issues
+      if (location.protocol === 'http:') {
+        message += "The page is HTTP (not secure). For API access, open YouTube via HTTPS.";
+      } else {
+        message += "Check VPN/network, and ensure site permission for generativelanguage.googleapis.com is ON in Lemur.";
+      }
+      if (event && event.timeStamp < 5000) {
+        message += " Also verify the API key in Settings.";
+      }
       sendToBackground({
         type: "error",
         tabId: s.tabId,
-        message: "WebSocket error. Check VPN/network, then retry.",
+        message,
       });
     }
   };
@@ -376,9 +424,28 @@ function connectWebSocket(s) {
     if (session !== s || s.ws !== ws || s.closedByUs) return;
     if (!s.everReady) {
       const reason = event.reason || "";
-      let message = "Gemini refused the connection.";
-      if (reason) message += " " + reason;
-      else message += " Check the API key in Settings.";
+      let message = "";
+      const code = event.code || 0;
+
+      // Map common WebSocket close codes to user-friendly messages
+      if (code === 1006) {
+        message = "Network disconnected or server unreachable.";
+      } else if (code === 1008) {
+        message = "Invalid API key or policy violation.";
+      } else if (code === 1011) {
+        message = "Gemini Live reported an internal error.";
+      } else if (reason.includes("quota") || reason.includes("Quota")) {
+        message = "API quota exceeded. Check usage on Google AI Studio.";
+      } else if (reason.includes("key") || reason.includes("invalid")) {
+        message = "Invalid API key. Get a new one from Google AI Studio.";
+      } else if (reason.includes("permission") || reason.includes("access")) {
+        message = "Site permission missing. Enable generativelanguage.googleapis.com in Lemur.";
+      } else if (reason) {
+        message = "Gemini refused: " + reason;
+      } else {
+        message = "Gemini refused the connection. Check API key and network.";
+      }
+
       sendToBackground({ type: "error", tabId: s.tabId, message });
       stopSessionInternal();
       return;
@@ -598,32 +665,63 @@ function playTranslatedAudio(s, base64Data) {
 function stopSessionInternal() {
   const s = session;
   if (!s) return;
-  session = null;
+
+  // Set flag first to prevent reconnection attempts
   s.closedByUs = true;
   if (s.reconnectTimer) clearTimeout(s.reconnectTimer);
+
+  // Clear session reference AFTER setting flag to avoid race conditions
+  session = null;
+
+  // WebSocket cleanup - remove event listeners first
+  if (s.ws) {
+    s.ws.onopen = null;
+    s.ws.onmessage = null;
+    s.ws.onerror = null;
+    s.ws.onclose = null;
+    try {
+      if (s.ws.readyState === WebSocket.OPEN || s.ws.readyState === WebSocket.CONNECTING) {
+        s.ws.close(1000);
+      }
+    } catch (_) {}
+  }
+
+  // Audio node cleanup in safe order
   try {
+    if (s.monitorGain) s.monitorGain.disconnect();
+    if (s.silenceGain) s.silenceGain.disconnect();
     if (s.captureNode) {
       if (s.captureNode.port) s.captureNode.port.onmessage = null;
       s.captureNode.disconnect();
     }
-    if (s.silenceGain) s.silenceGain.disconnect();
     if (s.sourceNode) s.sourceNode.disconnect();
-    if (s.monitorGain) s.monitorGain.disconnect();
   } catch (_) {}
+
+  // Media stream tracks
   try {
-    s.stream.getTracks().forEach((t) => t.stop());
+    if (s.stream) s.stream.getTracks().forEach((t) => t.stop());
   } catch (_) {}
+
+  // Audio contexts (should be after all nodes disconnected)
   try {
-    s.captureContext.close();
-  } catch (_) {}
-  try {
-    s.playbackContext.close();
-  } catch (_) {}
-  try {
-    if (s.ws && (s.ws.readyState === WebSocket.OPEN || s.ws.readyState === WebSocket.CONNECTING)) {
-      s.ws.close(1000);
+    if (s.playbackContext && s.playbackContext.state !== 'closed') {
+      s.playbackContext.close();
     }
   } catch (_) {}
+  try {
+    if (s.captureContext && s.captureContext.state !== 'closed') {
+      s.captureContext.close();
+    }
+  } catch (_) {}
+
+  // Clear all pending queues and buffers
+  s.queue.length = 0;
+  s.queuedLength = 0;
+  s.srcAcc = new Float32Array(0);
+  s.outAcc = new Float32Array(0);
+  s.srcF0s.length = 0;
+  s.outF0s.length = 0;
+  s.delayMeasures.length = 0;
 }
 
 chrome.runtime.onMessage.addListener((message, sender) => {

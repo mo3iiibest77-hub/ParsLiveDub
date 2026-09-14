@@ -12,7 +12,7 @@ Complete context for ParsLiveDub so any AI assistant can continue development wi
 - **Type:** Chrome Extension (Manifest V3), tested on Lemur Browser (Android/Chromium)
 - **Goal:** Real-time live dubbing of any browser tab (mainly YouTube) into 70+ languages using Google Gemini Live Translate API
 - **Repo:** https://github.com/mo3iiibest77-hub/ParsLiveDub
-- **Current version:** 1.6.5
+- **Current version:** 1.6.6 `**Phase A stabilization complete**`
 
 ---
 
@@ -120,7 +120,7 @@ ParsLiveDub/
 ## 9. Known Issues ❌
 
 - Audio/video sync still imperfect (~2.5–3.5s is largely Gemini Live latency; client can only shave buffers)
-- Female pitch correction may still artifact if WSOLA `bestOffset` is too weak (energy-only, not full continuity correlation) — **verify on device**
+- Female pitch correction: WSOLA upgraded with true cross-correlation for continuity (v1.6.6) — needs verification on device
 - Canvas lipsync disabled on mobile
 - `playbackRate` trick on mobile: YouTube sometimes ignores or resets rate
 
@@ -128,10 +128,10 @@ ParsLiveDub/
 
 ## 10. Immediate Next Task
 
-1. **User test v1.6.5** on Lemur with female speakers — confirm whether WSOLA removed the grain/noise
-2. If noise remains: upgrade `bestOffset` to real cross-correlation / normalized correlation against the previous overlap tail (true WSOLA), or fall back to pass-through when `|ratio-1|` is moderate
-3. Then: improve mobile A/V sync beyond `playbackRate`
-4. Later: professional UI; Native Android app
+1. **User test v1.6.6** on Lemur with female speakers — verify improved WSOLA cross-correlation
+2. Professional UI redesign (Phase B)
+3. Improve mobile A/V sync beyond `playbackRate`
+4. Native Android app (when user gives separate prompt)
 
 ---
 
@@ -151,6 +151,7 @@ ParsLiveDub/
 | 1.6.3 | Never hide YouTube video on Android/Lemur (fix black screen) |
 | 1.6.4 | `CHUNK_MS=60`, interactive latency hint, rolling delay measure, mobile `playbackRate` sync |
 | 1.6.5 | Replace basic OLA pitch shift with WSOLA-style `pitchShiftKeepLength` (grain 512, hop 128, search window, normalize) |
+| 1.6.6 | **Phase A stabilization** — Improved cross-correlation in WSOLA, robust audio context cleanup, better error messages for WebSocket errors and tab capture conflicts |
 
 ---
 

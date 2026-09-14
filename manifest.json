@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ParsLiveDub",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "description": "Live-dub any tab into 70+ languages. Auto lipsync and male/female voice matching via Gemini Live Translate.",
   "permissions": [
     "tabCapture",
