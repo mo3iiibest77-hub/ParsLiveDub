@@ -5,7 +5,7 @@
   window.__pldSyncInstalled = true;
 
   const MAX_DELAY_MS = 5000;
-  const MIN_DELAY_MS = 800;
+  const MIN_DELAY_MS = 600;
   const DEFAULT_DELAY_MS = 2900;
 
   const state = {
@@ -16,15 +16,15 @@
     ctx: null,
     hud: null,
     frames: [],
+    pool: [],
     running: false,
-    rvfcHandle: null,
     rafHandle: 0,
     lastCapture: 0,
-    captureEveryMs: 42,
-    observer: null,
+    captureEveryMs: 50,
     onSeek: null,
     onFs: null,
   };
+
 
   function clampDelay(ms) {
     const n = Number(ms);
@@ -56,6 +56,7 @@
     return (
       video.closest(".html5-video-container") ||
       video.closest(".html5-video-player") ||
+      video.closest("#movie_player") ||
       video.closest("#player") ||
       video.closest(".video-stream") ||
       video.parentElement ||
@@ -65,6 +66,7 @@
 
   function ensureOverlay(video) {
     const host = hostFor(video);
+    if (!host) return;
     const hostStyle = window.getComputedStyle(host);
     if (hostStyle.position === "static") host.style.position = "relative";
 
@@ -80,9 +82,10 @@
         objectFit: "contain",
         pointerEvents: "none",
         zIndex: "2",
+        background: "#000",
       });
       state.canvas = canvas;
-      state.ctx = canvas.getContext("2d", { alpha: false });
+      state.ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
     }
 
     if (state.canvas.parentElement !== host) host.appendChild(state.canvas);
@@ -109,20 +112,37 @@
     }
     if (state.hud.parentElement !== host) host.appendChild(state.hud);
 
+    hideVideo(video);
+  }
+
+  function hideVideo(video) {
+    if (!video) return;
     video.style.opacity = "0";
+    video.style.visibility = "visible";
     video.dataset.pldHidden = "1";
   }
 
+  function acquireCanvas(w, h) {
+    const c = state.pool.pop() || document.createElement("canvas");
+    if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
+    return c;
+  }
+
+  function releaseCanvas(c) {
+    if (!c) return;
+    if (state.pool.length < 48) state.pool.push(c);
+  }
+
   function pruneFrames(now) {
-    const keepFrom = now - state.delayMs - 250;
+    const keepFrom = now - state.delayMs - 280;
     while (state.frames.length > 1 && state.frames[0].t < keepFrom) {
-      const gone = state.frames.shift();
-      if (gone && gone.bmp && gone.bmp.close) gone.bmp.close();
+      releaseCanvas(state.frames.shift().bmp);
     }
-    const cap = Math.ceil((state.delayMs / 1000) * 28) + 8;
+    const fps = 1000 / Math.max(33, state.captureEveryMs);
+    const cap = Math.ceil((state.delayMs / 1000) * fps) + 6;
     while (state.frames.length > cap) {
-      const gone = state.frames.shift();
-      if (gone && gone.bmp && gone.bmp.close) gone.bmp.close();
+      releaseCanvas(state.frames.shift().bmp);
     }
   }
 
@@ -130,30 +150,20 @@
     const w = video.videoWidth || 0;
     const h = video.videoHeight || 0;
     if (!w || !h) return null;
-    const maxW = window.innerWidth < 700 ? 854 : 1280;
+    const mobile = window.innerWidth < 700 || window.devicePixelRatio > 2.2;
+    const maxW = mobile ? 640 : 960;
     const scale = w > maxW ? maxW / w : 1;
     return { w: Math.max(2, Math.round(w * scale)), h: Math.max(2, Math.round(h * scale)) };
   }
 
-  async function grabFrame(video) {
+  function grabFrame(video) {
     const size = captureSize(video);
-    if (!size) return;
+    if (!size || !video.videoWidth) return;
     const now = performance.now();
     try {
-      let bmp;
-      if (typeof createImageBitmap === "function") {
-        bmp = await createImageBitmap(video, {
-          resizeWidth: size.w,
-          resizeHeight: size.h,
-          resizeQuality: "low",
-        });
-      } else {
-        const scratch = document.createElement("canvas");
-        scratch.width = size.w;
-        scratch.height = size.h;
-        scratch.getContext("2d").drawImage(video, 0, 0, size.w, size.h);
-        bmp = scratch;
-      }
+      const bmp = acquireCanvas(size.w, size.h);
+      const ctx = bmp.getContext("2d", { alpha: false });
+      ctx.drawImage(video, 0, 0, size.w, size.h);
       state.frames.push({ t: now, bmp, w: size.w, h: size.h });
       pruneFrames(now);
     } catch (_) {}
@@ -171,8 +181,6 @@
 
   function draw() {
     if (!state.running || !state.canvas || !state.ctx) return;
-    const video = state.video;
-    if (!video) return;
     const frame = pickFrame(performance.now());
     if (!frame) return;
     if (state.canvas.width !== frame.w || state.canvas.height !== frame.h) {
@@ -183,8 +191,7 @@
       state.ctx.drawImage(frame.bmp, 0, 0, frame.w, frame.h);
     } catch (_) {}
     if (state.hud) {
-      const sec = (state.delayMs / 1000).toFixed(1);
-      state.hud.textContent = "Lipsync " + sec + "s";
+      state.hud.textContent = "Lipsync " + (state.delayMs / 1000).toFixed(1) + "s";
     }
   }
 
@@ -198,8 +205,9 @@
       bindVideo(video);
     }
     if (state.video) {
+      hideVideo(state.video);
       const now = performance.now();
-      if (now - state.lastCapture >= state.captureEveryMs) {
+      if (now - state.lastCapture >= state.captureEveryMs && !state.video.paused) {
         state.lastCapture = now;
         grabFrame(state.video);
       }
@@ -215,10 +223,7 @@
       } catch (_) {}
     }
     state.onSeek = () => {
-      while (state.frames.length) {
-        const gone = state.frames.shift();
-        if (gone && gone.bmp && gone.bmp.close) gone.bmp.close();
-      }
+      while (state.frames.length) releaseCanvas(state.frames.shift().bmp);
     };
     video.addEventListener("seeked", state.onSeek);
   }
@@ -234,7 +239,7 @@
   function start(delayMs) {
     state.enabled = true;
     state.delayMs = clampDelay(delayMs || state.delayMs);
-    state.captureEveryMs = window.innerWidth < 700 ? 50 : 40;
+    state.captureEveryMs = window.innerWidth < 700 ? 66 : 48;
     const video = findVideo();
     if (!video) {
       state.running = true;
@@ -267,10 +272,8 @@
     if (state.rafHandle) cancelAnimationFrame(state.rafHandle);
     state.rafHandle = 0;
     restoreVideo(state.video);
-    while (state.frames.length) {
-      const gone = state.frames.shift();
-      if (gone && gone.bmp && gone.bmp.close) gone.bmp.close();
-    }
+    while (state.frames.length) releaseCanvas(state.frames.shift().bmp);
+    state.pool.length = 0;
     if (state.canvas && state.canvas.parentElement) state.canvas.parentElement.removeChild(state.canvas);
     if (state.hud && state.hud.parentElement) state.hud.parentElement.removeChild(state.hud);
     if (state.onSeek && state.video) {
@@ -288,8 +291,23 @@
     state.hud = null;
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
+  function onNav() {
+    if (!state.enabled) return;
+    restoreVideo(state.video);
+    while (state.frames.length) releaseCanvas(state.frames.shift().bmp);
+    state.video = null;
+    start(state.delayMs);
+  }
+
+  window.addEventListener("yt-navigate-finish", onNav);
+  window.addEventListener("yt-page-data-updated", onNav);
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") return;
+    if (message.type === "PLD_PING") {
+      sendResponse({ ok: true, enabled: state.enabled, delayMs: state.delayMs });
+      return;
+    }
     if (message.type === "PLD_START" || message.type === "PLD_SYNC") {
       if (message.enabled === false) {
         stop();

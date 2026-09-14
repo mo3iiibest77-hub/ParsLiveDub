@@ -19,7 +19,7 @@ h2 { font-size: 16px; margin-bottom: 8px; }
 .desc { font-size: 13px; color: #9fb0c8; margin-bottom: 12px; }
 .desc a { color: #7dd3fc; }
 .row { display: flex; gap: 8px; margin-bottom: 10px; }
-input {
+input[type="password"], input[type="text"] {
   flex: 1; height: 42px; border-radius: 10px;
   border: 1px solid #2a3a55; background: #0f1728; color: #e8eef8; padding: 0 12px;
 }
@@ -36,3 +36,12 @@ input {
 .msg.err { color: #fca5a5; }
 ol { padding-left: 18px; color: #cbd5e1; font-size: 14px; }
 li { margin-bottom: 6px; }
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  color: #d5deea;
+  margin: 8px 0;
+}
+.check input { margin-top: 3px; accent-color: #2563eb; }

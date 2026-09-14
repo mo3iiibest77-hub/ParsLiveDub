@@ -6,6 +6,7 @@ const OUTPUT_SAMPLE_RATE = 24000;
 const CHUNK_MS = 100;
 const MAX_RECONNECT_ATTEMPTS = 4;
 const INPUT_HOLD_MAX_S = 5;
+const DEFAULT_DELAY_MS = 2900;
 
 let session = null;
 
@@ -67,8 +68,135 @@ function pcm16BytesToFloat32(bytes) {
   return out;
 }
 
-async function startSession({ tabId, streamId, apiKey, targetLanguageCode }) {
+function concatFloat32(a, b) {
+  if (!a || !a.length) return b;
+  const out = new Float32Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function estimateF0(samples, sampleRate) {
+  const n = samples.length;
+  if (n < 160) return 0;
+  let energy = 0;
+  for (let i = 0; i < n; i++) energy += samples[i] * samples[i];
+  const rms = Math.sqrt(energy / n);
+  if (rms < 0.02) return 0;
+
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += samples[i];
+  mean /= n;
+
+  const minF = 75;
+  const maxF = 320;
+  const minLag = Math.max(2, Math.floor(sampleRate / maxF));
+  const maxLag = Math.min(n - 2, Math.floor(sampleRate / minF));
+  let bestLag = 0;
+  let bestCorr = 0;
+  let var0 = 0;
+  for (let i = 0; i < n; i++) {
+    const x = samples[i] - mean;
+    var0 += x * x;
+  }
+  if (var0 < 1e-6) return 0;
+  const step = sampleRate > 20000 ? 2 : 1;
+  for (let lag = minLag; lag <= maxLag; lag += step) {
+    let corr = 0;
+    const count = n - lag;
+    for (let i = 0; i < count; i++) {
+      corr += (samples[i] - mean) * (samples[i + lag] - mean);
+    }
+    corr /= count;
+    if (corr > bestCorr) {
+      bestCorr = corr;
+      bestLag = lag;
+    }
+  }
+  const norm = bestCorr / (var0 / n);
+  if (!bestLag || norm < 0.22) return 0;
+  return sampleRate / bestLag;
+}
+
+function classifyGender(f0) {
+  if (!f0 || f0 < 70 || f0 > 350) return "u";
+  if (f0 < 155) return "m";
+  if (f0 > 180) return "f";
+  return "u";
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const s = values.slice().sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function pitchShiftKeepLength(samples, ratio) {
+  if (!samples || samples.length < 80) return samples;
+  const r = Math.max(0.72, Math.min(1.42, ratio));
+  if (Math.abs(r - 1) < 0.05) return samples;
+  const grain = 240;
+  const hopOut = 120;
+  const hopIn = hopOut * r;
+  const out = new Float32Array(samples.length);
+  let inPos = 0;
+  let outPos = 0;
+  let wrote = false;
+  while (outPos + grain < out.length && inPos + grain < samples.length) {
+    const i0 = Math.floor(inPos);
+    for (let i = 0; i < grain; i++) {
+      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (grain - 1));
+      const src = i0 + i;
+      if (src < samples.length) out[outPos + i] += samples[src] * w;
+    }
+    wrote = true;
+    outPos += hopOut;
+    inPos += hopIn;
+  }
+  if (!wrote || outPos < samples.length * 0.5) {
+    const alt = new Float32Array(samples.length);
+    const maxIdx = samples.length - 1;
+    for (let i = 0; i < alt.length; i++) {
+      const src = Math.min(maxIdx, i * r);
+      const j = Math.floor(src);
+      const f = src - j;
+      const a = samples[j] || 0;
+      const b = samples[Math.min(j + 1, maxIdx)] || 0;
+      alt[i] = a + (b - a) * f;
+    }
+    return alt;
+  }
+  return out;
+}
+
+function pushF0(list, value, cap) {
+  if (!value) return;
+  list.push(value);
+  if (list.length > cap) list.shift();
+}
+
+function emitLatency(s) {
+  const delayMs = s.syncOffsetMs > 0 ? s.syncOffsetMs : s.measuredDelayMs || DEFAULT_DELAY_MS;
+  sendToBackground({
+    type: "latency",
+    tabId: s.tabId,
+    ms: delayMs,
+    measuredMs: s.measuredDelayMs || 0,
+    lipsync: !!s.lipsync,
+    srcGender: s.srcGender,
+    outGender: s.outGender,
+    pitchRatio: s.pitchRatio,
+  });
+}
+
+async function startSession(opts) {
   stopSessionInternal();
+
+  const apiKey = opts.apiKey;
+  let targetLanguageCode = opts.targetLanguageCode;
+  const streamId = opts.streamId;
+  const tabId = opts.tabId;
 
   if (typeof apiKey !== "string" || !apiKey) {
     throw new Error("No API key set. Open Settings and paste your Gemini key.");
@@ -107,6 +235,9 @@ async function startSession({ tabId, streamId, apiKey, targetLanguageCode }) {
     tabId,
     apiKey,
     targetLanguageCode,
+    lipsync: opts.lipsync !== false,
+    matchGender: opts.matchGender !== false,
+    syncOffsetMs: Number(opts.syncOffsetMs) || 0,
     stream,
     captureContext,
     playbackContext,
@@ -125,6 +256,17 @@ async function startSession({ tabId, streamId, apiKey, targetLanguageCode }) {
     playbackLead: 0.2,
     reconnectAttempts: 0,
     reconnectTimer: null,
+    firstSendAt: 0,
+    firstPlayAt: 0,
+    measuredDelayMs: DEFAULT_DELAY_MS,
+    srcAcc: new Float32Array(0),
+    outAcc: new Float32Array(0),
+    srcF0s: [],
+    outF0s: [],
+    srcGender: "u",
+    outGender: "u",
+    pitchRatio: 1,
+    lastLatencyEmit: 0,
   };
   session = s;
 
@@ -141,6 +283,7 @@ async function startSession({ tabId, streamId, apiKey, targetLanguageCode }) {
   }
 
   sendToBackground({ type: "status", status: "connecting" });
+  if (s.lipsync) emitLatency(s);
   connectWebSocket(s);
 }
 
@@ -186,9 +329,6 @@ function connectWebSocket(s) {
 
   ws.onopen = () => {
     if (session !== s || s.ws !== ws) return;
-    // Transcription configs MUST sit at setup root.
-    // Putting them inside generationConfig is rejected:
-    // "Unknown name inputAudioTranscription"
     ws.send(
       JSON.stringify({
         setup: {
@@ -230,7 +370,7 @@ function connectWebSocket(s) {
       const reason = event.reason || "";
       let message = "Gemini refused the connection.";
       if (reason) message += " " + reason;
-      else message += " Check the API key in Settings. If Persian Live Dub works with this key, the previous ParsLiveDub setup payload was invalid — this build uses the working protocol.";
+      else message += " Check the API key in Settings.";
       sendToBackground({ type: "error", tabId: s.tabId, message });
       stopSessionInternal();
       return;
@@ -253,6 +393,45 @@ function connectWebSocket(s) {
       if (session === s && !s.closedByUs) connectWebSocket(s);
     }, delay);
   };
+}
+
+function observeSourcePitch(s, pcm16k) {
+  if (!s.matchGender) return;
+  s.srcAcc = concatFloat32(s.srcAcc, pcm16k);
+  const need = 2048;
+  while (s.srcAcc.length >= need) {
+    const window = s.srcAcc.subarray(0, need);
+    const f0 = estimateF0(window, INPUT_SAMPLE_RATE);
+    pushF0(s.srcF0s, f0, 10);
+    s.srcAcc = s.srcAcc.subarray(need);
+    const med = median(s.srcF0s);
+    const g = classifyGender(med);
+    if (g !== "u") s.srcGender = g;
+    updatePitchRatio(s);
+  }
+}
+
+function observeOutputPitch(s, pcm24k) {
+  if (!s.matchGender) return;
+  s.outAcc = concatFloat32(s.outAcc, pcm24k);
+  const need = 3072;
+  while (s.outAcc.length >= need) {
+    const window = s.outAcc.subarray(0, need);
+    const f0 = estimateF0(window, OUTPUT_SAMPLE_RATE);
+    pushF0(s.outF0s, f0, 8);
+    s.outAcc = s.outAcc.subarray(need);
+    const med = median(s.outF0s);
+    const g = classifyGender(med);
+    if (g !== "u") s.outGender = g;
+    updatePitchRatio(s);
+  }
+}
+
+function updatePitchRatio(s) {
+  let target = 1;
+  if (s.srcGender === "f" && s.outGender === "m") target = 1.28;
+  else if (s.srcGender === "m" && s.outGender === "f") target = 0.78;
+  s.pitchRatio = s.pitchRatio * 0.82 + target * 0.18;
 }
 
 function onCapturedSamples(s, samples) {
@@ -293,7 +472,9 @@ function drainQueue(s) {
     }
     s.queuedLength -= s.inputChunkSize;
 
-    const pcmBytes = floatTo16BitPCM(downsampleTo16k(chunk, s.captureContext.sampleRate));
+    const pcm16 = downsampleTo16k(chunk, s.captureContext.sampleRate);
+    observeSourcePitch(s, pcm16);
+    const pcmBytes = floatTo16BitPCM(pcm16);
     try {
       s.ws.send(
         JSON.stringify({
@@ -305,6 +486,7 @@ function drainQueue(s) {
           },
         })
       );
+      if (!s.firstSendAt) s.firstSendAt = performance.now();
     } catch (_) {
       break;
     }
@@ -380,7 +562,11 @@ function playTranslatedAudio(s, base64Data) {
   try {
     const bytes = base64ToUint8Array(base64Data);
     if (bytes.length < 2) return;
-    const samples = pcm16BytesToFloat32(bytes);
+    let samples = pcm16BytesToFloat32(bytes);
+    observeOutputPitch(s, samples);
+    if (s.matchGender && Math.abs(s.pitchRatio - 1) >= 0.05) {
+      samples = pitchShiftKeepLength(samples, s.pitchRatio);
+    }
     if (s.playbackContext.state === "suspended") s.playbackContext.resume().catch(() => {});
 
     const buffer = s.playbackContext.createBuffer(1, samples.length, OUTPUT_SAMPLE_RATE);
@@ -393,6 +579,15 @@ function playTranslatedAudio(s, base64Data) {
     if (s.nextPlayTime < now + 0.02) s.nextPlayTime = now + 0.08;
     node.start(s.nextPlayTime);
     s.nextPlayTime += buffer.duration;
+
+    if (!s.firstPlayAt && s.firstSendAt) {
+      s.firstPlayAt = performance.now();
+      s.measuredDelayMs = Math.max(1200, Math.min(5000, s.firstPlayAt - s.firstSendAt));
+      emitLatency(s);
+    } else if (s.lipsync && performance.now() - s.lastLatencyEmit > 800) {
+      s.lastLatencyEmit = performance.now();
+      emitLatency(s);
+    }
 
     if (s.monitorGain) {
       const t = s.captureContext.currentTime;
@@ -450,5 +645,10 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   } else if (message.type === "stop") {
     stopSessionInternal();
     sendToBackground({ type: "stopped" });
+  } else if (message.type === "update-settings" && session) {
+    if (typeof message.lipsync === "boolean") session.lipsync = message.lipsync;
+    if (typeof message.matchGender === "boolean") session.matchGender = message.matchGender;
+    if (Number.isFinite(Number(message.syncOffsetMs))) session.syncOffsetMs = Number(message.syncOffsetMs);
+    emitLatency(session);
   }
 });

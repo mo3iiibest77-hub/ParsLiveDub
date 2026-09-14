@@ -3,9 +3,22 @@ const saveBtn = document.getElementById("saveBtn");
 const toggleBtn = document.getElementById("toggleBtn");
 const testBtn = document.getElementById("testBtn");
 const msg = document.getElementById("msg");
+const lipsync = document.getElementById("lipsync");
+const gender = document.getElementById("gender");
 
-chrome.storage.local.get(["geminiApiKey"], (r) => {
+chrome.storage.local.get(["geminiApiKey", "pldLipsync", "pldMatchGender"], (r) => {
   if (r.geminiApiKey) keyInput.value = r.geminiApiKey;
+  lipsync.checked = r.pldLipsync !== false;
+  gender.checked = r.pldMatchGender !== false;
+});
+
+lipsync.addEventListener("change", () => {
+  chrome.storage.local.set({ pldLipsync: lipsync.checked });
+  chrome.runtime.sendMessage({ target: "offscreen", type: "update-settings", lipsync: lipsync.checked }).catch(() => {});
+});
+gender.addEventListener("change", () => {
+  chrome.storage.local.set({ pldMatchGender: gender.checked });
+  chrome.runtime.sendMessage({ target: "offscreen", type: "update-settings", matchGender: gender.checked }).catch(() => {});
 });
 
 toggleBtn.addEventListener("click", () => {
