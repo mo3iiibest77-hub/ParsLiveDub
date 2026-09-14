@@ -1,7 +1,7 @@
-/* ParsLiveDub lipsync: delay VIDEO pixels only.
-   Tab audio stays live so Gemini does not recapture a lagged soundtrack.
-   On mobile YouTube, canvas capture often yields blank frames — never hide
-   the real video until we have proven non-blank frames. */
+/* ParsLiveDub lipsync v1.6.3
+   Delay VIDEO pixels on desktop only.
+   On Android / Lemur / touch phones: NEVER hide the real video
+   (canvas capture of YouTube is unreliable and caused full black picture). */
 (function () {
   if (window.__pldSyncInstalled) return;
   window.__pldSyncInstalled = true;
@@ -9,6 +9,16 @@
   const MAX_DELAY_MS = 5000;
   const MIN_DELAY_MS = 600;
   const DEFAULT_DELAY_MS = 2900;
+
+  function isMobileEnv() {
+    try {
+      if (/Android|iPhone|iPad|iPod|Mobile|Lemur/i.test(navigator.userAgent || "")) return true;
+      if ((navigator.maxTouchPoints || 0) > 1 && Math.min(window.innerWidth, window.innerHeight) < 900) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  const MOBILE = isMobileEnv();
 
   const state = {
     enabled: false,
@@ -30,6 +40,7 @@
     captureFails: 0,
     startedAt: 0,
     aborted: false,
+    mobileMode: MOBILE,
   };
 
   function clampDelay(ms) {
@@ -70,7 +81,41 @@
     );
   }
 
+  function ensureHud(video) {
+    const host = hostFor(video);
+    if (!host) return;
+    const hostStyle = window.getComputedStyle(host);
+    if (hostStyle.position === "static") host.style.position = "relative";
+
+    if (!state.hud) {
+      const hud = document.createElement("div");
+      hud.id = "pld-lipsync-hud";
+      Object.assign(hud.style, {
+        position: "absolute",
+        left: "12px",
+        top: "12px",
+        zIndex: "2147483646",
+        pointerEvents: "none",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        fontSize: "11px",
+        letterSpacing: "0.04em",
+        color: "#f4f4f5",
+        background: "rgba(10,10,12,0.72)",
+        border: "1px solid rgba(255,255,255,0.14)",
+        borderRadius: "999px",
+        padding: "4px 10px",
+      });
+      state.hud = hud;
+    }
+    if (state.hud.parentElement !== host) host.appendChild(state.hud);
+    updateHud();
+  }
+
   function ensureOverlay(video) {
+    if (state.mobileMode || state.aborted) {
+      ensureHud(video);
+      return;
+    }
     const host = hostFor(video);
     if (!host) return;
     const hostStyle = window.getComputedStyle(host);
@@ -96,32 +141,11 @@
     }
 
     if (state.canvas.parentElement !== host) host.appendChild(state.canvas);
-
-    if (!state.hud) {
-      const hud = document.createElement("div");
-      hud.id = "pld-lipsync-hud";
-      Object.assign(hud.style, {
-        position: "absolute",
-        left: "12px",
-        top: "12px",
-        zIndex: "4",
-        pointerEvents: "none",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: "11px",
-        letterSpacing: "0.04em",
-        color: "#f4f4f5",
-        background: "rgba(10,10,12,0.62)",
-        border: "1px solid rgba(255,255,255,0.12)",
-        borderRadius: "999px",
-        padding: "4px 10px",
-      });
-      state.hud = hud;
-    }
-    if (state.hud.parentElement !== host) host.appendChild(state.hud);
-    updateHud();
+    ensureHud(video);
   }
 
   function hideVideo(video) {
+    if (state.mobileMode || state.aborted) return;
     if (!video || state.videoHidden) return;
     video.style.opacity = "0";
     video.style.visibility = "visible";
@@ -168,8 +192,7 @@
     const w = video.videoWidth || 0;
     const h = video.videoHeight || 0;
     if (!w || !h) return null;
-    const mobile = window.innerWidth < 700 || window.devicePixelRatio > 2.2;
-    const maxW = mobile ? 640 : 960;
+    const maxW = 960;
     const scale = w > maxW ? maxW / w : 1;
     return { w: Math.max(2, Math.round(w * scale)), h: Math.max(2, Math.round(h * scale)) };
   }
@@ -191,15 +214,16 @@
       let bright = 0;
       for (let i = 0; i < samples.length; i++) {
         const d = samples[i];
-        if (d[0] + d[1] + d[2] > 30) bright += 1;
+        if (d[0] + d[1] + d[2] > 24) bright += 1;
       }
-      return bright === 0;
+      return bright < 2;
     } catch (_) {
       return true;
     }
   }
 
   function grabFrame(video) {
+    if (state.mobileMode || state.aborted) return;
     const size = captureSize(video);
     if (!size || !video.videoWidth) {
       state.captureFails += 1;
@@ -226,8 +250,8 @@
   }
 
   function maybeEnableOverlay() {
-    if (state.aborted || state.videoHidden || !state.captureOk) return;
-    const need = Math.max(3, Math.ceil(state.delayMs / state.captureEveryMs) * 0.35);
+    if (state.mobileMode || state.aborted || state.videoHidden || !state.captureOk) return;
+    const need = Math.max(4, Math.ceil(state.delayMs / state.captureEveryMs) * 0.4);
     if (state.frames.length >= need) {
       hideVideo(state.video);
     }
@@ -243,10 +267,7 @@
     }
     state.canvas = null;
     state.ctx = null;
-    if (state.hud) {
-      state.hud.textContent = "Lipsync off · picture kept";
-      state.hud.style.opacity = "0.85";
-    }
+    updateHud();
     console.warn("[ParsLiveDub] visual lipsync aborted:", reason);
   }
 
@@ -262,6 +283,10 @@
 
   function updateHud() {
     if (!state.hud) return;
+    if (state.mobileMode) {
+      state.hud.textContent = "Dub live · picture kept";
+      return;
+    }
     if (state.aborted) {
       state.hud.textContent = "Lipsync off · picture kept";
       return;
@@ -270,7 +295,8 @@
   }
 
   function draw() {
-    if (!state.running || state.aborted || !state.canvas || !state.ctx || !state.videoHidden) return;
+    if (state.mobileMode || state.aborted) return;
+    if (!state.running || !state.canvas || !state.ctx || !state.videoHidden) return;
     const frame = pickFrame(performance.now());
     if (!frame) return;
     if (state.canvas.width !== frame.w || state.canvas.height !== frame.h) {
@@ -286,15 +312,15 @@
   function loopCapture() {
     if (!state.running) return;
 
-    if (!state.aborted && state.startedAt && performance.now() - state.startedAt > 2500) {
+    if (!state.mobileMode && !state.aborted && state.startedAt && performance.now() - state.startedAt > 2000) {
       if (!state.captureOk || state.frames.length < 2) {
-        abortVisualLipsync("no usable frames (mobile canvas often blocked)");
-      } else if (state.captureFails > 30 && state.frames.length < 3) {
-        abortVisualLipsync("capture failing repeatedly");
+        abortVisualLipsync("no usable frames");
+      } else if (state.captureFails > 24 && state.frames.length < 3) {
+        abortVisualLipsync("capture failing");
       }
     }
 
-    if (!state.aborted) {
+    if (!state.aborted && !state.mobileMode) {
       const video = state.video && document.contains(state.video) ? state.video : findVideo();
       if (video && video !== state.video) {
         restoreVideo(state.video);
@@ -310,6 +336,8 @@
         }
       }
       draw();
+    } else if (state.mobileMode && state.video) {
+      ensureHud(state.video);
     }
 
     state.rafHandle = requestAnimationFrame(loopCapture);
@@ -323,7 +351,6 @@
     }
     state.onSeek = () => {
       while (state.frames.length) releaseCanvas(state.frames.shift().bmp);
-      state.videoHidden = false;
       restoreVideo(video);
     };
     video.addEventListener("seeked", state.onSeek);
@@ -337,23 +364,29 @@
     state.videoHidden = false;
     state.startedAt = performance.now();
     state.delayMs = clampDelay(delayMs || state.delayMs);
-    state.captureEveryMs = window.innerWidth < 700 ? 66 : 48;
+    state.captureEveryMs = 48;
+    state.mobileMode = isMobileEnv();
+
     const video = findVideo();
-    if (!video) {
-      state.running = true;
-      if (!state.rafHandle) state.rafHandle = requestAnimationFrame(loopCapture);
-      return;
+    if (video) {
+      state.video = video;
+      restoreVideo(video);
+      ensureOverlay(video);
+      bindVideo(video);
     }
-    state.video = video;
-    ensureOverlay(video);
-    bindVideo(video);
+
+    if (state.mobileMode) {
+      state.aborted = true;
+      updateHud();
+    }
+
     if (!state.running) {
       state.running = true;
       state.rafHandle = requestAnimationFrame(loopCapture);
     }
     if (!state.onFs) {
       state.onFs = () => {
-        if (state.video && !state.aborted) ensureOverlay(state.video);
+        if (state.video) ensureOverlay(state.video);
       };
       document.addEventListener("fullscreenchange", state.onFs);
     }
@@ -412,7 +445,13 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") return;
     if (message.type === "PLD_PING") {
-      sendResponse({ ok: true, enabled: state.enabled, delayMs: state.delayMs, aborted: state.aborted });
+      sendResponse({
+        ok: true,
+        enabled: state.enabled,
+        delayMs: state.delayMs,
+        aborted: state.aborted,
+        mobile: state.mobileMode,
+      });
       return;
     }
     if (message.type === "PLD_START" || message.type === "PLD_SYNC") {
