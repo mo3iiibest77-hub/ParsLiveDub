@@ -2,7 +2,7 @@
 
 Complete context for ParsLiveDub so any AI assistant can continue development without prior explanation.
 
-**Standing rule for every AI working on this repo:** After *any* code or behavior change, update this file in the same session (version, what changed, what works, known issues, next task). Do not wait for the user to ask.
+**Standing rule:** After any material change, update this file in the same session (version, what changed, what works, known issues, next task).
 
 ---
 
@@ -12,7 +12,7 @@ Complete context for ParsLiveDub so any AI assistant can continue development wi
 - **Type:** Chrome Extension (Manifest V3), tested on Lemur Browser (Android/Chromium)
 - **Goal:** Real-time live dubbing of any browser tab (mainly YouTube) into 70+ languages using Google Gemini Live Translate API
 - **Repo:** https://github.com/mo3iiibest77-hub/ParsLiveDub
-- **Current version:** 1.6.8 `**Phase C: reduced client buffers, improved mobile A/V sync**`
+- **Current version:** 1.6.9
 
 ---
 
@@ -30,23 +30,20 @@ Complete context for ParsLiveDub so any AI assistant can continue development wi
 
 ```
 ParsLiveDub/
-├── PROJECT_CONTEXT.md     # This file — always keep in sync with reality
-├── manifest.json          # MV3 manifest, version 1.6.5
-├── background.js          # Service Worker: badge, storage, message routing
+├── PROJECT_CONTEXT.md
+├── manifest.json          # version 1.6.9
+├── background.js
 ├── offscreen/
-│   ├── offscreen.html     # Offscreen document host
-│   ├── offscreen.js       # Core: audio capture, WebSocket to Gemini, playback, WSOLA pitch
-│   └── pcm-worklet.js     # AudioWorklet: 1024-sample PCM capture buffer
+│   ├── offscreen.html
+│   ├── offscreen.js       # capture, Gemini WS, playback, WSOLA pitch
+│   └── pcm-worklet.js
 ├── content/
-│   └── sync.js            # Content script: lipsync HUD, mobile playbackRate trick
+│   └── sync.js            # HUD, mobile playbackRate continuous sync
 ├── popup/
-│   ├── popup.html
-│   ├── popup.js           # UI: API key, language, lipsync toggle, start/stop
+│   ├── popup.html         # MUST link href="popup.css" (not popup-new.css)
+│   ├── popup.js
 │   └── popup.css
 ├── options/
-│   ├── options.html
-│   ├── options.js
-│   └── options.css
 └── icons/
 ```
 
@@ -54,98 +51,81 @@ ParsLiveDub/
 
 ## 4. Architecture & Data Flow
 
-1. User clicks Start → `popup.js` calls `chrome.tabCapture.getMediaStreamId()`
-2. `background.js` creates Offscreen Document
-3. `offscreen.js` receives MediaStream → AudioWorklet captures PCM → downsampled to 16kHz
-4. PCM chunks sent over WebSocket to Gemini Live Translate (`CHUNK_MS = 60ms`)
-5. Gemini returns translated PCM audio (~24kHz)
-6. Optional gender match: F0 estimate → pitch ratio → `pitchShiftKeepLength()` (WSOLA)
-7. `offscreen.js` plays back audio via Web Audio API (`latencyHint: "interactive"`)
-8. Delay measured via rolling median of first 6 chunks (`measuredDelayMs`)
-9. `background.js` relays latency to `content/sync.js` via `PLD_SYNC` message
-10. `content/sync.js` shows HUD on video; desktop may canvas-delay frames; mobile never hides video (playbackRate trick only)
+1. Start → `popup.js` → `tabCapture.getMediaStreamId`
+2. Offscreen document captures tab PCM → 16 kHz → Gemini Live WS (`CHUNK_MS=60`)
+3. Translated PCM ~24 kHz → optional WSOLA pitch → Web Audio playback
+4. Measured delay → `PLD_SYNC` → `content/sync.js` HUD / mobile rate tweaks
+5. Mobile: **never** hide the real video (no black screen)
 
 ---
 
 ## 5. Key Constants (offscreen.js)
 
-- `CHUNK_MS = 60` (was 100 in older builds; reduced in v1.6.4)
-- `INPUT_SAMPLE_RATE = 16000`
-- `OUTPUT_SAMPLE_RATE = 24000`
+- `CHUNK_MS = 60`
+- `INPUT_SAMPLE_RATE = 16000` / `OUTPUT_SAMPLE_RATE = 24000`
+- `INPUT_HOLD_MAX_S = 2` (was 5; Phase C)
+- `playbackLead ≈ 0.08` (was 0.15; Phase C)
+- ScriptProcessor fallback buffer **1024** (was 2048; Phase C)
 - `DEFAULT_DELAY_MS = 2900`
-- `MAX_RECONNECT_ATTEMPTS = 4`
-- `INPUT_HOLD_MAX_S = 5`
-- `playbackLead = 0.15`
-- `nextPlayTime` gap: if `< now+0.05` → set to `now+0.15`
 
 ---
 
-## 6. Gender/Pitch Matching (offscreen.js)
+## 6. Gender / WSOLA (offscreen.js)
 
-- `estimateF0()` uses autocorrelation on PCM windows
-- `classifyGender()`: f0 < 155Hz → male, f0 > 180Hz → female
-- `updatePitchRatio()`: if src=female & out=male → ratio 1.28 (pitch up); if src=male & out=female → ratio 0.78 (pitch down)
-- `pitchShiftKeepLength()` (v1.6.5): **WSOLA-style**
-  - `grain = 512`, `hopOut = 128`, `hopIn = hopOut * ratio`, `searchWin = 80`
-  - Hanning window
-  - `bestOffset(inPos)` searches nearby positions (energy-based score; not full cross-correlation with previous grain yet)
-  - Overlap-add into `out` + normalize by window sum (`norm`)
-- **Status:** Replaced naive OLA (grain=240) that caused heavy noise on female correction. User must re-test female voices on Lemur. If artifacts remain, improve `bestOffset` to true cross-correlation against the last written grain overlap region.
+- F0 → gender → pitch ratio (e.g. 1.28 / 0.78)
+- `pitchShiftKeepLength`: grain 512, hopOut 128, Hanning window, overlap normalize
+- `bestOffset`: normalized cross-correlation vs previous overlap when `outPos > 0`; energy fallback if correlation weak (`bestCorr < 0.3`)
+- **Do not** treat `bestDelta === 0` as failure (base offset is often correct)
 
 ---
 
 ## 7. Lipsync (content/sync.js)
 
-- **Desktop:** canvas frame-buffer delay — captures video frames ~every 48ms, delayed overlay, hides real video only after non-blank frames proven
-- **Mobile/Lemur:** canvas `drawImage` from YouTube video is unreliable (black frames / CORS) → visual hide **DISABLED**
-- **Mobile (v1.6.3+):** never set video `opacity: 0`; HUD shows `Dub live · picture kept`
-- **Mobile fallback (v1.6.4):** `playbackRate` trick — temporarily slow video by `lagSec/25`, restore after `lagSec+0.8s` (YouTube may fight this)
-- HUD: mobile `Dub live · picture kept`; desktop `Lipsync Xs` when canvas path active
+- Desktop: canvas delay only after non-blank frames
+- Mobile: hide disabled; HUD `Dub live · picture kept`
+- Mobile continuous `playbackRate` adjustments (v1.6.8) — YouTube may still fight; no opacity:0
 
 ---
 
 ## 8. What Works ✅
 
-- Gemini WebSocket connection with valid API key
-- Live dubbing starts and plays translated audio
-- Male voice dubbing: historically clean
-- Video no longer goes black on mobile (v1.6.3)
-- Chunk size 60ms (v1.6.4)
-- Rolling median delay measurement (v1.6.4)
-- WSOLA pitch-shift replacement shipped (v1.6.5) — pending user verification on female speech
-- **Phase C optimizations:** input hold 2s (was 5s), playback lead 80ms (was 150ms), ScriptProcessor buffer 1024 (was 2048)
-- **Mobile sync 2.0:** continuous gentle adjustment instead of one-time playbackRate (v1.6.8)
+- Gemini live dubbing with API key
+- Male voice generally clean
+- No black screen on mobile (v1.6.3+)
+- Phase C buffer reductions shipped
+- **v1.6.9:** popup CSS loads (`href="popup.css"`) — DeepSeek left `popup-new.css` which does not exist → unstyled HTML on Lemur
 
 ---
 
-## 9. Known Issues ❌
+## 9. Known Issues / Risks ❌
 
-- Audio/video sync still imperfect (~2.5–3.5s is largely Gemini Live latency; client can only shave buffers)
-- Female pitch correction: WSOLA upgraded with true cross-correlation for continuity (v1.6.6) — needs verification on device
-- Professional UI: Complete redesign with stats, better onboarding, clearer error messages, and mobile-friendly layout (Phase B complete)
-- Canvas lipsync disabled on mobile
-- **Mobile continuous sync:** new gentle adjustment algorithm needs testing on Lemur; YouTube may still fight rate changes but less aggressively
-
----
-
-## 10. Immediate Next Task
-
-1. **User test v1.6.8** on Lemur — verify:
-   - Female voice WSOLA cross-correlation (from v1.6.6)
-   - Phase C buffer reductions don't cause audio glitches
-   - New mobile continuous sync works better than one-time playbackRate trick
-   - No black screen regression (critical!)
-2. If mobile sync still inadequate, consider **audio-only delay** approach: Keep video real-time, apply extra audio delay to match
-3. Native Android app (when user gives separate prompt)
+- ~2.5–3.5s delay mostly Gemini Live latency
+- Female pitch still needs device verification after WSOLA upgrades
+- Continuous mobile `playbackRate` may be ignored/reset by YouTube
+- ScriptProcessor 1024 + lower hold: watch for underruns on weak devices
+- PROJECT_CONTEXT / roadmap text had drifted (UI listed both complete and still-todo)
 
 ---
 
-## 11. Roadmap (priority)
+## 10. Audit of DeepSeek changes (1.6.6–1.6.8)
 
-1. Validate / harden female pitch shift (v1.6.5 WSOLA → refine if needed) — **CURRENT**
-2. Better mobile audio/video sync
-3. Professional UI redesign
-4. Native Android app (Google login, auto API key, ExoPlayer for sync control)
+| Area | Verdict |
+|------|--------|
+| WSOLA cross-correlation | Present and directionally correct; energy fallback logic was flawed if `bestDelta===0` |
+| Cleanup / error strings | Useful |
+| UI redesign HTML/CSS/JS | Good structure; **CSS link bug** broke all styling on Lemur |
+| Buffer cuts 5s→2s, 2048→1024, lead 0.15→0.08 | Reasonable; validate no glitches on device |
+| Continuous mobile sync | Safer than opacity hide; fragile vs YouTube player |
+
+---
+
+## 11. Immediate Next Task
+
+1. User reload **v1.6.9** on Lemur — confirm styled popup
+2. Test female voice + listen for underruns after buffer cuts
+3. If WSOLA still noisy, further tune correlation / pass-through thresholds
+4. Soften or gate continuous playbackRate if YouTube fights it
+5. Native Android only when user issues separate prompt
 
 ---
 
@@ -153,35 +133,24 @@ ParsLiveDub/
 
 | Version | Notes |
 |--------|--------|
-| 1.6.3 | Never hide YouTube video on Android/Lemur (fix black screen) |
-| 1.6.4 | `CHUNK_MS=60`, interactive latency hint, rolling delay measure, mobile `playbackRate` sync |
-| 1.6.5 | Replace basic OLA pitch shift with WSOLA-style `pitchShiftKeepLength` (grain 512, hop 128, search window, normalize) |
-| 1.6.6 | **Phase A** — WSOLA cross-correlation, robust cleanup, better WebSocket/tabCapture error messages |
-| 1.6.7 | **Phase B** — Professional UI redesign with stats dashboard, improved onboarding, better mobile layout |
-| 1.6.8 | **Phase C** — Client buffer optimization: input hold 5→2s, playback lead 0.15→0.08s, ScriptProcessor 2048→1024, continuous gentle mobile sync (no black screen) |
+| 1.6.6 | Phase A WSOLA correlation, cleanup, errors |
+| 1.6.7 | Phase B UI redesign (**CSS filename mismatch**) |
+| 1.6.8 | Phase C buffers + continuous mobile sync |
+| **1.6.9** | Fix `popup.html` → `popup.css`; version bump |
 
 ---
 
 ## 13. Development Notes
 
-- No npm, no build step — edit JS files directly and reload extension in Lemur
-- Load unpacked / ZIP with `manifest.json` at ZIP root (or load the extracted folder that contains it)
-- After extension reload, fully close and reopen the YouTube tab so content scripts refresh
-- Lemur: allow site access for `generativelanguage.googleapis.com`
-- Disable other dubbing extensions (`tabCapture` conflict)
-- Server: Ubuntu 22.04 on Doprax, clone at `~/ParsLiveDub`
-- If `git push` rejects: `git pull --rebase` then push (remote may have docs commits from other sessions)
-- **Never paste GitHub PATs in chat**; revoke if exposed
+- Vanilla JS only; Lemur load folder with `manifest.json`
+- Fully close YouTube tab after extension reload
+- Disable other tabCapture extensions
+- Never commit API keys; never paste PATs in chat
 
 ---
 
 ## 14. AI Continuation Instructions
 
-If you are an AI reading this file:
-
-- Do **NOT** ask for re-explanation of the project. This file is the full context.
-- **Always** update `PROJECT_CONTEXT.md` after every material change (same PR/commit batch when possible).
-- Bump `manifest.json` version on each user-facing fix (1.6.5 → 1.6.6 …).
-- Vanilla JS only — no new dependencies.
-- Prefer complete function replacements or precise diffs over vague advice.
-- Current verification focus: female-voice quality after WSOLA (v1.6.5).
+- Read this file first; do not ask for full re-explanation
+- Always bump version + update this file + commit/push together
+- Priority: stability on Lemur > polish > Android later
