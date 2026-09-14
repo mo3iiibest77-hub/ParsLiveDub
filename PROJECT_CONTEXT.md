@@ -12,7 +12,7 @@ Complete context for ParsLiveDub so any AI assistant can continue development wi
 - **Type:** Chrome Extension (Manifest V3), tested on Lemur Browser (Android/Chromium)
 - **Goal:** Real-time live dubbing of any browser tab (mainly YouTube) into 70+ languages using Google Gemini Live Translate API
 - **Repo:** https://github.com/mo3iiibest77-hub/ParsLiveDub
-- **Current version:** 1.6.7 `**Phases A+B complete - stable extension with professional UI**`
+- **Current version:** 1.6.8 `**Phase C: reduced client buffers, improved mobile A/V sync**`
 
 ---
 
@@ -112,8 +112,9 @@ ParsLiveDub/
 - Video no longer goes black on mobile (v1.6.3)
 - Chunk size 60ms (v1.6.4)
 - Rolling median delay measurement (v1.6.4)
-- Mobile `playbackRate` sync attempt (v1.6.4)
 - WSOLA pitch-shift replacement shipped (v1.6.5) — pending user verification on female speech
+- **Phase C optimizations:** input hold 2s (was 5s), playback lead 80ms (was 150ms), ScriptProcessor buffer 1024 (was 2048)
+- **Mobile sync 2.0:** continuous gentle adjustment instead of one-time playbackRate (v1.6.8)
 
 ---
 
@@ -123,14 +124,18 @@ ParsLiveDub/
 - Female pitch correction: WSOLA upgraded with true cross-correlation for continuity (v1.6.6) — needs verification on device
 - Professional UI: Complete redesign with stats, better onboarding, clearer error messages, and mobile-friendly layout (Phase B complete)
 - Canvas lipsync disabled on mobile
-- `playbackRate` trick on mobile: YouTube sometimes ignores or resets rate
+- **Mobile continuous sync:** new gentle adjustment algorithm needs testing on Lemur; YouTube may still fight rate changes but less aggressively
 
 ---
 
 ## 10. Immediate Next Task
 
-1. **User test v1.6.6** on Lemur with female speakers — verify improved WSOLA cross-correlation
-2. Improve mobile A/V sync beyond `playbackRate` (Phase C)
+1. **User test v1.6.8** on Lemur — verify:
+   - Female voice WSOLA cross-correlation (from v1.6.6)
+   - Phase C buffer reductions don't cause audio glitches
+   - New mobile continuous sync works better than one-time playbackRate trick
+   - No black screen regression (critical!)
+2. If mobile sync still inadequate, consider **audio-only delay** approach: Keep video real-time, apply extra audio delay to match
 3. Native Android app (when user gives separate prompt)
 
 ---
@@ -153,6 +158,7 @@ ParsLiveDub/
 | 1.6.5 | Replace basic OLA pitch shift with WSOLA-style `pitchShiftKeepLength` (grain 512, hop 128, search window, normalize) |
 | 1.6.6 | **Phase A** — WSOLA cross-correlation, robust cleanup, better WebSocket/tabCapture error messages |
 | 1.6.7 | **Phase B** — Professional UI redesign with stats dashboard, improved onboarding, better mobile layout |
+| 1.6.8 | **Phase C** — Client buffer optimization: input hold 5→2s, playback lead 0.15→0.08s, ScriptProcessor 2048→1024, continuous gentle mobile sync (no black screen) |
 
 ---
 

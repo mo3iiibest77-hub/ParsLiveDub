@@ -5,7 +5,7 @@ const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
 const CHUNK_MS = 60;
 const MAX_RECONNECT_ATTEMPTS = 4;
-const INPUT_HOLD_MAX_S = 5;
+const INPUT_HOLD_MAX_S = 2;
 const DEFAULT_DELAY_MS = 2900;
 
 let session = null;
@@ -308,7 +308,7 @@ async function startSession(opts) {
     queuedLength: 0,
     inputChunkSize: Math.round((captureContext.sampleRate * CHUNK_MS) / 1000),
     nextPlayTime: 0,
-    playbackLead: 0.15,
+    playbackLead: 0.08,
     reconnectAttempts: 0,
     reconnectTimer: null,
     firstSendAt: 0,
@@ -359,7 +359,7 @@ async function attachCapture(s) {
       console.warn("[ParsLiveDub] AudioWorklet failed, using ScriptProcessor", err);
     }
   }
-  const scriptNode = s.captureContext.createScriptProcessor(2048, 1, 1);
+  const scriptNode = s.captureContext.createScriptProcessor(1024, 1, 1);
   scriptNode.onaudioprocess = (event) => {
     onSamples(new Float32Array(event.inputBuffer.getChannelData(0)));
   };
@@ -524,7 +524,12 @@ function onCapturedSamples(s, samples) {
 
 function drainQueue(s) {
   if (!s.ready || !s.ws || s.ws.readyState !== WebSocket.OPEN) return;
-  while (s.queuedLength >= s.inputChunkSize) {
+
+  // Send smaller batches if queue is growing too fast (aggressive draining)
+  const maxChunksPerCall = s.queuedLength > s.inputChunkSize * 8 ? 4 : Infinity;
+  let chunksSent = 0;
+
+  while (s.queuedLength >= s.inputChunkSize && chunksSent < maxChunksPerCall) {
     const chunk = new Float32Array(s.inputChunkSize);
     let filled = 0;
     while (filled < s.inputChunkSize) {
@@ -637,7 +642,7 @@ function playTranslatedAudio(s, base64Data) {
     node.buffer = buffer;
     node.connect(s.playbackContext.destination);
     const now = s.playbackContext.currentTime;
-    if (s.nextPlayTime < now + 0.05) s.nextPlayTime = now + 0.15;
+    if (s.nextPlayTime < now + 0.03) s.nextPlayTime = now + 0.08;
     node.start(s.nextPlayTime);
     s.nextPlayTime += buffer.duration;
     if (s.firstSendAt && s.delayMeasures.length < 6) {

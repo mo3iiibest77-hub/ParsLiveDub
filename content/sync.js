@@ -41,6 +41,8 @@
     startedAt: 0,
     aborted: false,
     mobileMode: MOBILE,
+    syncState: null,
+    syncTimer: null,
   };
 
   function clampDelay(ms) {
@@ -381,11 +383,21 @@
       if (video && state.delayMs > 0) {
         const lagSec = state.delayMs / 1000;
         const slowRate = Math.max(0.75, 1 - lagSec / 25);
-        video.playbackRate = slowRate;
-        const restoreMs = lagSec * 1000 + 800;
-        setTimeout(() => {
-          try { if (video) video.playbackRate = 1.0; } catch (_) {}
-        }, restoreMs);
+        // Continuous gentle sync instead of one-time playbackRate adjustment
+        // Initialize sync state
+        state.syncState = {
+          targetRate: slowRate,
+          currentRate: video.playbackRate,
+          lastAdjust: performance.now(),
+          adjustmentCount: 0,
+          maxAdjustments: Math.max(8, Math.floor(lagSec * 4)), // More adjustments for larger lag
+        };
+
+        // Set initial rate
+        try { video.playbackRate = slowRate; } catch (_) {}
+
+        // Start continuous adjustment
+        startContinuousSync(video, lagSec);
       }
     }
 
@@ -428,11 +440,85 @@
       document.removeEventListener("fullscreenchange", state.onFs);
       state.onFs = null;
     }
+    // Clean up sync timer
+    if (state.syncTimer) {
+      clearInterval(state.syncTimer);
+      state.syncTimer = null;
+      state.syncState = null;
+    }
     state.video = null;
     state.canvas = null;
     state.ctx = null;
     state.hud = null;
     state.videoHidden = false;
+  }
+
+  function startContinuousSync(video, lagSec) {
+    if (!state.syncTimer) {
+      state.syncTimer = setInterval(() => {
+        if (!state.enabled || !state.mobileMode || !video || video.readyState < 2) {
+          clearInterval(state.syncTimer);
+          state.syncTimer = null;
+          return;
+        }
+
+        // Gentle continuous adjustment
+        const now = performance.now();
+        if (now - state.syncState.lastAdjust < 300) return; // Don't adjust too frequently
+
+        const currentTime = video.currentTime;
+        const expectedTime = state.syncState.expectedTime || currentTime;
+
+        // Calculate drift
+        const drift = currentTime - expectedTime;
+        const absDrift = Math.abs(drift);
+
+        // Gentle rate adjustment
+        let newRate = video.playbackRate;
+        if (absDrift > 0.1) { // >100ms drift
+          // Small adjustment: 0.01 rate change per adjustment
+          if (drift > 0) {
+            newRate = Math.max(0.85, video.playbackRate - 0.01); // Slow down if ahead
+          } else {
+            newRate = Math.min(1.15, video.playbackRate + 0.01); // Speed up if behind
+          }
+        } else if (absDrift > 0.05) { // >50ms drift
+          // Tiny adjustment
+          if (drift > 0) {
+            newRate = Math.max(0.9, video.playbackRate - 0.005);
+          } else {
+            newRate = Math.min(1.1, video.playbackRate + 0.005);
+          }
+        }
+
+        // Apply if rate changed
+        if (Math.abs(newRate - video.playbackRate) > 0.001) {
+          try {
+            video.playbackRate = newRate;
+            state.syncState.currentRate = newRate;
+            state.syncState.lastAdjust = now;
+            state.syncState.adjustmentCount++;
+          } catch (_) {}
+        }
+
+        // Update expected time for next check
+        state.syncState.expectedTime = currentTime + 0.3; // Check every 300ms
+
+        // Stop if we've done enough adjustments or drift is small
+        if (state.syncState.adjustmentCount >= state.syncState.maxAdjustments || absDrift < 0.02) {
+          // Gradually return to normal rate
+          if (Math.abs(video.playbackRate - 1.0) > 0.01) {
+            try {
+              video.playbackRate = 1.0 + (video.playbackRate - 1.0) * 0.7; // 30% correction toward 1.0
+            } catch (_) {}
+          } else {
+            clearInterval(state.syncTimer);
+            state.syncTimer = null;
+            state.syncState = null;
+          }
+        }
+      }, 300); // Check every 300ms
+    }
   }
 
   function onNav() {
@@ -445,6 +531,12 @@
     state.captureOk = false;
     state.captureFails = 0;
     state.startedAt = performance.now();
+    // Clean up sync timer if exists
+    if (state.syncTimer) {
+      clearInterval(state.syncTimer);
+      state.syncTimer = null;
+      state.syncState = null;
+    }
     start(state.delayMs);
   }
 
