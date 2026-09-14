@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ParsLiveDub</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">🎙️ ParsLiveDub</div>
+      <div class="subtitle">دوبله زنده هوشمند فارسی</div>
+    </header>
+
+    <div class="status-card" id="statusCard">
+      <div class="status-indicator" id="statusIndicator"></div>
+      <span id="statusText">آماده</span>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn" class="btn btn-primary">
+        <span class="btn-icon">▶</span>
+        شروع دوبله
+      </button>
+      <button id="stopBtn" class="btn btn-danger" style="display: none;">
+        <span class="btn-icon">■</span>
+        توقف
+      </button>
+    </div>
+
+    <div class="info">
+      <p>کلید API خود را در تنظیمات وارد کنید.</p>
+      <a href="#" id="openOptions">تنظیمات و راهنما</a>
+    </div>
+
+    <footer>
+      <small>نسخه ۱.۰.۰ • قدرت‌گرفته از Gemini</small>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
