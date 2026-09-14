@@ -1,5 +1,7 @@
 /* ParsLiveDub lipsync: delay VIDEO pixels only.
-   Tab audio stays live so Gemini does not recapture a lagged soundtrack. */
+   Tab audio stays live so Gemini does not recapture a lagged soundtrack.
+   On mobile YouTube, canvas capture often yields blank frames — never hide
+   the real video until we have proven non-blank frames. */
 (function () {
   if (window.__pldSyncInstalled) return;
   window.__pldSyncInstalled = true;
@@ -23,8 +25,12 @@
     captureEveryMs: 50,
     onSeek: null,
     onFs: null,
+    videoHidden: false,
+    captureOk: false,
+    captureFails: 0,
+    startedAt: 0,
+    aborted: false,
   };
-
 
   function clampDelay(ms) {
     const n = Number(ms);
@@ -82,7 +88,8 @@
         objectFit: "contain",
         pointerEvents: "none",
         zIndex: "2",
-        background: "#000",
+        background: "transparent",
+        display: "none",
       });
       state.canvas = canvas;
       state.ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
@@ -111,15 +118,26 @@
       state.hud = hud;
     }
     if (state.hud.parentElement !== host) host.appendChild(state.hud);
-
-    hideVideo(video);
+    updateHud();
   }
 
   function hideVideo(video) {
-    if (!video) return;
+    if (!video || state.videoHidden) return;
     video.style.opacity = "0";
     video.style.visibility = "visible";
     video.dataset.pldHidden = "1";
+    state.videoHidden = true;
+    if (state.canvas) state.canvas.style.display = "block";
+  }
+
+  function restoreVideo(video) {
+    if (!video) return;
+    if (video.dataset.pldHidden === "1") {
+      video.style.opacity = "";
+      delete video.dataset.pldHidden;
+    }
+    state.videoHidden = false;
+    if (state.canvas) state.canvas.style.display = "none";
   }
 
   function acquireCanvas(w, h) {
@@ -156,17 +174,80 @@
     return { w: Math.max(2, Math.round(w * scale)), h: Math.max(2, Math.round(h * scale)) };
   }
 
+  function frameLooksBlank(bmp) {
+    try {
+      const ctx = bmp.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return true;
+      const w = bmp.width;
+      const h = bmp.height;
+      if (w < 2 || h < 2) return true;
+      const samples = [
+        ctx.getImageData(Math.floor(w * 0.5), Math.floor(h * 0.5), 1, 1).data,
+        ctx.getImageData(Math.floor(w * 0.25), Math.floor(h * 0.25), 1, 1).data,
+        ctx.getImageData(Math.floor(w * 0.75), Math.floor(h * 0.75), 1, 1).data,
+        ctx.getImageData(Math.floor(w * 0.25), Math.floor(h * 0.75), 1, 1).data,
+        ctx.getImageData(Math.floor(w * 0.75), Math.floor(h * 0.25), 1, 1).data,
+      ];
+      let bright = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const d = samples[i];
+        if (d[0] + d[1] + d[2] > 30) bright += 1;
+      }
+      return bright === 0;
+    } catch (_) {
+      return true;
+    }
+  }
+
   function grabFrame(video) {
     const size = captureSize(video);
-    if (!size || !video.videoWidth) return;
+    if (!size || !video.videoWidth) {
+      state.captureFails += 1;
+      return;
+    }
     const now = performance.now();
     try {
       const bmp = acquireCanvas(size.w, size.h);
       const ctx = bmp.getContext("2d", { alpha: false });
       ctx.drawImage(video, 0, 0, size.w, size.h);
+      if (frameLooksBlank(bmp)) {
+        releaseCanvas(bmp);
+        state.captureFails += 1;
+        return;
+      }
+      state.captureFails = 0;
+      state.captureOk = true;
       state.frames.push({ t: now, bmp, w: size.w, h: size.h });
       pruneFrames(now);
-    } catch (_) {}
+      maybeEnableOverlay();
+    } catch (_) {
+      state.captureFails += 1;
+    }
+  }
+
+  function maybeEnableOverlay() {
+    if (state.aborted || state.videoHidden || !state.captureOk) return;
+    const need = Math.max(3, Math.ceil(state.delayMs / state.captureEveryMs) * 0.35);
+    if (state.frames.length >= need) {
+      hideVideo(state.video);
+    }
+  }
+
+  function abortVisualLipsync(reason) {
+    if (state.aborted) return;
+    state.aborted = true;
+    restoreVideo(state.video);
+    while (state.frames.length) releaseCanvas(state.frames.shift().bmp);
+    if (state.canvas && state.canvas.parentElement) {
+      state.canvas.parentElement.removeChild(state.canvas);
+    }
+    state.canvas = null;
+    state.ctx = null;
+    if (state.hud) {
+      state.hud.textContent = "Lipsync off · picture kept";
+      state.hud.style.opacity = "0.85";
+    }
+    console.warn("[ParsLiveDub] visual lipsync aborted:", reason);
   }
 
   function pickFrame(now) {
@@ -179,8 +260,17 @@
     return chosen || (state.frames.length ? state.frames[0] : null);
   }
 
+  function updateHud() {
+    if (!state.hud) return;
+    if (state.aborted) {
+      state.hud.textContent = "Lipsync off · picture kept";
+      return;
+    }
+    state.hud.textContent = "Lipsync " + (state.delayMs / 1000).toFixed(1) + "s";
+  }
+
   function draw() {
-    if (!state.running || !state.canvas || !state.ctx) return;
+    if (!state.running || state.aborted || !state.canvas || !state.ctx || !state.videoHidden) return;
     const frame = pickFrame(performance.now());
     if (!frame) return;
     if (state.canvas.width !== frame.w || state.canvas.height !== frame.h) {
@@ -190,29 +280,38 @@
     try {
       state.ctx.drawImage(frame.bmp, 0, 0, frame.w, frame.h);
     } catch (_) {}
-    if (state.hud) {
-      state.hud.textContent = "Lipsync " + (state.delayMs / 1000).toFixed(1) + "s";
-    }
+    updateHud();
   }
 
   function loopCapture() {
     if (!state.running) return;
-    const video = state.video && document.contains(state.video) ? state.video : findVideo();
-    if (video && video !== state.video) {
-      restoreVideo(state.video);
-      state.video = video;
-      ensureOverlay(video);
-      bindVideo(video);
-    }
-    if (state.video) {
-      hideVideo(state.video);
-      const now = performance.now();
-      if (now - state.lastCapture >= state.captureEveryMs && !state.video.paused) {
-        state.lastCapture = now;
-        grabFrame(state.video);
+
+    if (!state.aborted && state.startedAt && performance.now() - state.startedAt > 2500) {
+      if (!state.captureOk || state.frames.length < 2) {
+        abortVisualLipsync("no usable frames (mobile canvas often blocked)");
+      } else if (state.captureFails > 30 && state.frames.length < 3) {
+        abortVisualLipsync("capture failing repeatedly");
       }
     }
-    draw();
+
+    if (!state.aborted) {
+      const video = state.video && document.contains(state.video) ? state.video : findVideo();
+      if (video && video !== state.video) {
+        restoreVideo(state.video);
+        state.video = video;
+        ensureOverlay(video);
+        bindVideo(video);
+      }
+      if (state.video && !state.video.paused) {
+        const now = performance.now();
+        if (now - state.lastCapture >= state.captureEveryMs) {
+          state.lastCapture = now;
+          grabFrame(state.video);
+        }
+      }
+      draw();
+    }
+
     state.rafHandle = requestAnimationFrame(loopCapture);
   }
 
@@ -224,20 +323,19 @@
     }
     state.onSeek = () => {
       while (state.frames.length) releaseCanvas(state.frames.shift().bmp);
+      state.videoHidden = false;
+      restoreVideo(video);
     };
     video.addEventListener("seeked", state.onSeek);
   }
 
-  function restoreVideo(video) {
-    if (!video) return;
-    if (video.dataset.pldHidden === "1") {
-      video.style.opacity = "";
-      delete video.dataset.pldHidden;
-    }
-  }
-
   function start(delayMs) {
     state.enabled = true;
+    state.aborted = false;
+    state.captureOk = false;
+    state.captureFails = 0;
+    state.videoHidden = false;
+    state.startedAt = performance.now();
     state.delayMs = clampDelay(delayMs || state.delayMs);
     state.captureEveryMs = window.innerWidth < 700 ? 66 : 48;
     const video = findVideo();
@@ -255,7 +353,7 @@
     }
     if (!state.onFs) {
       state.onFs = () => {
-        if (state.video) ensureOverlay(state.video);
+        if (state.video && !state.aborted) ensureOverlay(state.video);
       };
       document.addEventListener("fullscreenchange", state.onFs);
     }
@@ -263,12 +361,15 @@
 
   function updateDelay(delayMs) {
     state.delayMs = clampDelay(delayMs);
-    if (state.hud) state.hud.textContent = "Lipsync " + (state.delayMs / 1000).toFixed(1) + "s";
+    updateHud();
   }
 
   function stop() {
     state.enabled = false;
     state.running = false;
+    state.aborted = false;
+    state.captureOk = false;
+    state.captureFails = 0;
     if (state.rafHandle) cancelAnimationFrame(state.rafHandle);
     state.rafHandle = 0;
     restoreVideo(state.video);
@@ -289,6 +390,7 @@
     state.canvas = null;
     state.ctx = null;
     state.hud = null;
+    state.videoHidden = false;
   }
 
   function onNav() {
@@ -296,6 +398,11 @@
     restoreVideo(state.video);
     while (state.frames.length) releaseCanvas(state.frames.shift().bmp);
     state.video = null;
+    state.videoHidden = false;
+    state.aborted = false;
+    state.captureOk = false;
+    state.captureFails = 0;
+    state.startedAt = performance.now();
     start(state.delayMs);
   }
 
@@ -305,7 +412,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") return;
     if (message.type === "PLD_PING") {
-      sendResponse({ ok: true, enabled: state.enabled, delayMs: state.delayMs });
+      sendResponse({ ok: true, enabled: state.enabled, delayMs: state.delayMs, aborted: state.aborted });
       return;
     }
     if (message.type === "PLD_START" || message.type === "PLD_SYNC") {
