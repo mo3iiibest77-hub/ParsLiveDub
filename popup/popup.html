@@ -4,11 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ParsLiveDub • Live Translation</title>
-  <link rel="stylesheet" href="popup-new.css">
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="container">
-    <!-- Header -->
     <div class="header">
       <div class="logo">PLD</div>
       <div class="title-section">
@@ -17,7 +16,6 @@
       </div>
     </div>
 
-    <!-- Status Card -->
     <div id="statusCard" class="status-card idle">
       <div id="statusIndicator" class="status-indicator idle"></div>
       <div class="status-content">
@@ -26,12 +24,10 @@
       </div>
     </div>
 
-    <!-- Error Message -->
     <div id="errorMessage" class="error-message" hidden>
       <strong>Error:</strong> <span id="errorText"></span>
     </div>
 
-    <!-- Stats -->
     <div id="statsRow" class="stats-row" hidden>
       <div class="stat-item">
         <div id="delayStat" class="stat-value">—</div>
@@ -47,7 +43,6 @@
       </div>
     </div>
 
-    <!-- Language Selection -->
     <div class="form-section">
       <label class="form-label">
         Target language
@@ -56,7 +51,6 @@
       <select id="langSelect" class="form-select"></select>
     </div>
 
-    <!-- API Key -->
     <div class="form-section">
       <label class="form-label">
         Gemini API key
@@ -65,7 +59,6 @@
       <input id="apiKey" type="password" class="form-input" placeholder="AIza..." autocomplete="off">
     </div>
 
-    <!-- Sync Offset -->
     <div class="form-section">
       <label class="form-label">
         Video sync offset
@@ -82,7 +75,6 @@
       </select>
     </div>
 
-    <!-- Toggles -->
     <div class="toggle-row">
       <div class="toggle-label">
         <strong>Lipsync video</strong>
@@ -105,7 +97,6 @@
       </label>
     </div>
 
-    <!-- Buttons -->
     <div class="button-group">
       <button id="toggleBtn" class="primary-button">
         <span id="toggleIcon">▶</span>
@@ -114,9 +105,8 @@
       <button id="testBtn" class="secondary-button">Test Connection</button>
     </div>
 
-    <!-- Help/Onboarding -->
     <div class="help-section">
-      <div class="help-title">📍 Need help?</div>
+      <div class="help-title">Need help?</div>
       <div class="help-text">
         1. Get API key from <a href="https://aistudio.google.com/apikey" target="_blank" class="help-link">Google AI Studio</a>
       </div>
@@ -128,9 +118,8 @@
       </div>
     </div>
 
-    <!-- Footer -->
     <div class="footer">
-      v1.6.7 • Gemini Live Translate •
+      v1.6.12 • Gemini Live Translate •
       <a href="https://github.com/mo3iiibest77-hub/ParsLiveDub" target="_blank" class="help-link">GitHub</a>
     </div>
   </div>
