@@ -1,6 +1,7 @@
-/* ParsLiveDub lipsync v1.6.13
-   Delay VIDEO FRAMES only (canvas). Tab audio for Gemini stays real-time.
-   Mobile: try canvas lag; never hide video until non-blank frames proven. */
+/* ParsLiveDub lipsync v1.6.14
+   Picture lag via canvas frame buffer ONLY. Tab audio stays real-time.
+   Mobile/Lemur: NEVER hide YouTube video (canvas black frames caused blink).
+   Desktop: hide only after sustained non-blank buffer; restore on blank. */
 (function () {
   if (window.__pldSyncInstalled) return;
   window.__pldSyncInstalled = true;
@@ -40,6 +41,8 @@
     startedAt: 0,
     aborted: false,
     mobileMode: MOBILE,
+    goodStreak: 0,
+    blankStreak: 0,
     syncState: null,
     syncTimer: null,
   };
@@ -146,14 +149,16 @@
   }
 
   function hideVideo(video) {
-    if (state.aborted) return;
+    if (state.aborted || state.mobileMode) return;
     if (!video || state.videoHidden) return;
+    if ((state.goodStreak || 0) < 24) return;
     video.style.opacity = "0";
     video.style.visibility = "visible";
     video.dataset.pldHidden = "1";
     state.videoHidden = true;
     if (state.canvas) state.canvas.style.display = "block";
   }
+
 
   function restoreVideo(video) {
     if (!video) return;
@@ -224,10 +229,11 @@
   }
 
   function grabFrame(video) {
-    if (state.aborted) return;
+    if (state.aborted || state.mobileMode) return;
     const size = captureSize(video);
     if (!size || !video.videoWidth) {
       state.captureFails += 1;
+      state.goodStreak = 0;
       return;
     }
     const now = performance.now();
@@ -238,23 +244,34 @@
       if (frameLooksBlank(bmp)) {
         releaseCanvas(bmp);
         state.captureFails += 1;
+        state.blankStreak = (state.blankStreak || 0) + 1;
+        state.goodStreak = 0;
+        if (state.videoHidden) {
+          restoreVideo(video);
+          abortVisualLipsync("blank frame while overlay active");
+        }
         return;
       }
       state.captureFails = 0;
+      state.blankStreak = 0;
+      state.goodStreak = (state.goodStreak || 0) + 1;
       state.captureOk = true;
       state.frames.push({ t: now, bmp, w: size.w, h: size.h });
       pruneFrames(now);
       maybeEnableOverlay();
     } catch (_) {
       state.captureFails += 1;
+      state.goodStreak = 0;
     }
   }
 
   function maybeEnableOverlay() {
-    if (state.aborted || state.videoHidden || !state.captureOk) return;
-    const need = Math.max(4, Math.ceil(state.delayMs / state.captureEveryMs) * 0.4);
-    if (state.frames.length >= need) {
+    if (state.aborted || state.mobileMode || state.videoHidden || !state.captureOk) return;
+    const need = Math.max(24, Math.ceil(state.delayMs / Math.max(33, state.captureEveryMs)));
+    if (state.frames.length < need || (state.goodStreak || 0) < 24) return;
+    if (state.video) {
       hideVideo(state.video);
+      updateHud();
     }
   }
 
@@ -284,7 +301,7 @@
 
   function updateHud() {
     if (!state.hud) return;
-    if (state.aborted) {
+    if (state.mobileMode || state.aborted) {
       state.hud.textContent = "Dub live · picture real-time";
       return;
     }
@@ -377,8 +394,13 @@
       bindVideo(video);
     }
 
-    // Canvas picture lag only — do not slow video.playbackRate (delays source audio too).
-    updateHud();
+    // Canvas picture lag only — do not slow video.playbackRate.
+    if (state.mobileMode) {
+      state.aborted = true;
+      updateHud();
+    } else {
+      updateHud();
+    }
 
     if (!state.running) {
       state.running = true;
